@@ -106,30 +106,69 @@
       font-size: 0.85em;
       margin-top: 4px;
     }
-    .url-section {
+    .tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: var(--spacing);
+      border-radius: var(--border-radius);
+      overflow: hidden;
+    }
+    .tab {
+      flex: 1;
+      padding: 12px 20px;
+      text-align: center;
+      cursor: pointer;
+      background: #e8ecf1;
+      color: #666;
+      font-weight: 500;
+      font-size: 0.95em;
+      border: none;
+      transition: background 0.2s, color 0.2s;
+    }
+    .tab.active {
+      background: var(--primary-color);
+      color: white;
+    }
+    .tab:not(.active):hover {
+      background: #dce3eb;
+    }
+    .tab-panel {
+      display: none;
       background: white;
       padding: var(--spacing);
       border-radius: var(--border-radius);
       box-shadow: 0 2px 10px rgba(0,0,0,0.1);
       margin-bottom: var(--spacing);
     }
-    .url-section h2 { margin-top: 0; }
+    .tab-panel.active { display: block; }
+    .tab-panel h2 { margin-top: 0; }
   </style>
 </head>
 <body>
   <h1>Whisper 音频转写</h1>
 
-  <div class="url-section">
+  <div class="tabs">
+    <button class="tab active" data-tab="url">通过 URL 转写</button>
+    <button class="tab" data-tab="upload">上传文件转写</button>
+  </div>
+
+  <div class="tab-panel active" id="panel-url">
     <h2>通过 URL 转写</h2>
     <label>音频文件 URL:</label>
     <input type="text" id="audioUrl" placeholder="https://example.com/audio.wav" />
     <button id="urlSubmitBtn">开始转写</button>
   </div>
 
-  <form id="uploadForm">
-    <h2 style="margin-top:0">上传文件转写</h2>
+  <div class="tab-panel" id="panel-upload">
+    <h2>上传文件转写</h2>
     <label>音频文件 (WAV/MP3):</label>
     <input type="file" id="audioFile" accept="audio/*" required />
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">最大 50 MB，超大文件请切换到「通过 URL 转写」</div>
+    <button type="submit" id="uploadSubmitBtn">开始转写</button>
+  </div>
+
+  <div id="configForm" style="background:white; padding:var(--spacing); border-radius:var(--border-radius); box-shadow:0 2px 10px rgba(0,0,0,0.1); margin-bottom:var(--spacing);">
+    <h2>转写配置</h2>
     <label>任务:</label>
     <select id="task">
       <option value="transcribe">Transcribe（转写）</option>
@@ -142,8 +181,7 @@
     <label>前缀 (optional):</label>
     <input type="text" id="prefix" />
     <label><input type="checkbox" id="vad_filter" checked />启用 VAD 过滤</label>
-    <button type="submit">提交</button>
-  </form>
+  </div>
 
   <div id="progressContainer">
     <div class="progress-bar">
@@ -163,6 +201,16 @@ const progressContainer = document.getElementById('progressContainer');
 const progressBar = document.getElementById('progressBar');
 const progressText = document.getElementById('progressText');
 let srtContent = '';
+
+// Tab 切换
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+  });
+});
 
 function formatSRTTime(seconds) {
   const ms = Math.floor((seconds % 1) * 1000);
@@ -203,10 +251,16 @@ function hideProgress() {
 }
 
 // 文件上传转写
-document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
+document.getElementById('uploadSubmitBtn').addEventListener('click', async () => {
   const file = document.getElementById('audioFile').files[0];
   if (!file) return alert('Please select a file.');
+
+  // Cloudflare Workers 免费计划请求体限制 100MB，预留余量设为 50MB
+  const MAX_SIZE = 50 * 1024 * 1024;
+  if (file.size > MAX_SIZE) {
+    alert('文件过大（' + (file.size / (1024 * 1024)).toFixed(1) + ' MB），最大支持 50 MB。\n请使用更小的文件或通过 URL 转写。');
+    return;
+  }
 
   showProgress();
 
