@@ -4,36 +4,36 @@ const CHUNK_SIZE = 1024 * 1024;
 import HTML_PAGE from './index.html';
 
 export default {
-    async fetch(request, env) {
-      const url = new URL(request.url);
+  async fetch(request, env) {
+    const url = new URL(request.url);
 
-      // GET / - 返回前端页面
-      if (request.method === 'GET' && url.pathname === '/') {
-        return new Response(HTML_PAGE, {
-          headers: { 'Content-Type': 'text/html; charset=utf-8' }
-        });
-      }
-
-      // GET /url - 通过 URL 转写远程音频
-      if (request.method === 'GET' && url.pathname === '/url') {
-        return handleUrlTranscription(url, env);
-      }
-
-      // POST /raw - 上传音频并转写
-      if (request.method === 'POST' && url.pathname === '/raw') {
-        return handleUpload(request, url, env);
-      }
-
-      // 代理 ffmpeg CDN 文件，同源提供以解决 Worker 跨域问题
-      if (url.pathname.startsWith('/ffmpeg/')) {
-        return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/' + url.pathname.slice(8));
-      }
-      if (url.pathname.startsWith('/ffmpeg-core/')) {
-        return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/' + url.pathname.slice(14));
-      }
-
-      return new Response('Not Found', { status: 404 });
+    // GET / - 返回前端页面
+    if (request.method === 'GET' && url.pathname === '/') {
+      return new Response(HTML_PAGE, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8' }
+      });
     }
+
+    // GET /url - 通过 URL 转写远程音频
+    if (request.method === 'GET' && url.pathname === '/url') {
+      return handleUrlTranscription(url, env);
+    }
+
+    // POST /raw - 上传音频并转写
+    if (request.method === 'POST' && url.pathname === '/raw') {
+      return handleUpload(request, url, env);
+    }
+
+    // 代理 ffmpeg CDN 文件，同源提供以解决 Worker 跨域问题
+    if (url.pathname.startsWith('/ffmpeg/')) {
+      return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/' + url.pathname.slice(8));
+    }
+    if (url.pathname.startsWith('/ffmpeg-core/')) {
+      return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/' + url.pathname.slice(13));
+    }
+
+    return new Response('Not Found', { status: 404 });
+  }
 };
 
 // =================== 分块处理核心逻辑 ===================
