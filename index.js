@@ -48,7 +48,7 @@ function chunkAudio(buffer) {
  */
 async function transcribeChunk(chunk, env, params) {
   const inputs = {
-    audio: [...new Uint8Array(chunk)],
+    audio: arrayBufferToBase64(chunk),
     task: params.task,
     vad_filter: params.vad_filter,
   };
@@ -224,6 +224,16 @@ function formatSRTTime(seconds) {
 
 function pad(num, size = 2) {
   return num.toString().padStart(size, '0');
+}
+
+/** ArrayBuffer → Base64 字符串 */
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
 
