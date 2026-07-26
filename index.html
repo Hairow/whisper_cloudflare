@@ -143,6 +143,7 @@
     .tab-panel.active { display: block; }
     .tab-panel h2 { margin-top: 0; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
 </head>
 <body>
   <h1>Whisper 音频转写</h1>
@@ -161,9 +162,9 @@
 
   <div class="tab-panel" id="panel-upload">
     <h2>上传文件转写</h2>
-    <label>音频文件 (WAV/MP3):</label>
-    <input type="file" id="audioFile" accept="audio/*" required />
-    <div style="color:#888; font-size:0.85em; margin-top:2px;">最大 50 MB，超大文件请切换到「通过 URL 转写」</div>
+    <label>音频 / 视频文件:</label>
+    <input type="file" id="audioFile" accept="audio/*,video/*" required />
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持音频和视频格式，视频文件将自动提取音频。限制 50 MB，超大文件请切换到「通过 URL 转写」</div>
     <button type="submit" id="uploadSubmitBtn">开始转写</button>
   </div>
 
@@ -201,6 +202,71 @@ const progressContainer = document.getElementById('progressContainer');
 const progressBar = document.getElementById('progressBar');
 const progressText = document.getElementById('progressText');
 let srtContent = '';
+let uploadedFileName = '';
+
+// =================== FFmpeg 视频音频提取 ===================
+
+let ffmpeg = null;
+
+const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv', 'wmv', 'm4v', 'ogv', '3gp'];
+
+function isVideoFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  return VIDEO_EXTS.includes(ext);
+}
+
+async function getFFmpeg() {
+  if (ffmpeg) return ffmpeg;
+  progressText.textContent = '正在加载音频提取引擎（首次约 30 MB 下载）...';
+  ffmpeg = new FFmpegWASM.FFmpeg();
+  ffmpeg.on('progress', ({ progress }) => {
+    progressBar.style.width = Math.round(progress * 100) + '%';
+    progressText.textContent = '加载引擎中... ' + Math.round(progress * 100) + '%';
+  });
+  await ffmpeg.load({
+    coreURL: await FFmpegWASM.toBlobURL(
+      'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+      'text/javascript'
+    ),
+    wasmURL: await FFmpegWASM.toBlobURL(
+      'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+      'application/wasm'
+    ),
+  });
+  return ffmpeg;
+}
+
+/** 从视频文件中提取音频，返回 WAV 格式的 ArrayBuffer */
+async function extractAudioFromVideo(file) {
+  const ff = await getFFmpeg();
+  progressBar.style.width = '90%';
+  progressText.textContent = '正在从视频中提取音频...';
+  progressBar.style.width = '95%';
+
+  const inputExt = file.name.split('.').pop().toLowerCase();
+  const inputName = 'input.' + inputExt;
+  const outputName = 'output.wav';
+
+  await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+
+  await ff.exec([
+    '-i', inputName,
+    '-vn',                  // 丢弃视频轨道
+    '-ac', '1',             // 单声道（Whisper 不需要立体声）
+    '-ar', '16000',         // 16kHz 采样率（Whisper 官方推荐）
+    '-sample_fmt', 's16',   // 16-bit PCM
+    '-f', 'wav',
+    outputName
+  ]);
+
+  const data = (await ff.readFile(outputName)).buffer;
+
+  // 清理虚拟文件系统
+  await ff.deleteFile(inputName);
+  await ff.deleteFile(outputName);
+
+  return data;
+}
 
 // Tab 切换
 document.querySelectorAll('.tab').forEach(tab => {
@@ -252,17 +318,38 @@ function hideProgress() {
 
 // 文件上传转写
 document.getElementById('uploadSubmitBtn').addEventListener('click', async () => {
-  const file = document.getElementById('audioFile').files[0];
+  const fileInput = document.getElementById('audioFile');
+  const file = fileInput.files[0];
   if (!file) return alert('Please select a file.');
 
   // Cloudflare Workers 免费计划请求体限制 100MB，预留余量设为 50MB
   const MAX_SIZE = 50 * 1024 * 1024;
-  if (file.size > MAX_SIZE) {
+  if (!isVideoFile(file) && file.size > MAX_SIZE) {
     alert('文件过大（' + (file.size / (1024 * 1024)).toFixed(1) + ' MB），最大支持 50 MB。\n请使用更小的文件或通过 URL 转写。');
     return;
   }
 
   showProgress();
+
+  let audioBuffer;
+  const isVideo = isVideoFile(file);
+
+  if (isVideo) {
+    // 视频文件：先提取音频
+    progressText.textContent = '检测到视频文件，准备提取音频...';
+    uploadedFileName = file.name;
+    try {
+      audioBuffer = await extractAudioFromVideo(file);
+    } catch (e) {
+      progressContainer.style.display = 'none';
+      resultBox.value = '音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly，或尝试用本地工具先提取音频。';
+      return;
+    }
+    progressText.textContent = '音频提取完成（' + (audioBuffer.byteLength / (1024 * 1024)).toFixed(1) + ' MB），开始转写...';
+  } else {
+    uploadedFileName = file.name;
+    audioBuffer = await file.arrayBuffer();
+  }
 
   const task = document.getElementById('task').value;
   const language = document.getElementById('language').value;
@@ -270,8 +357,8 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
   const prefix = document.getElementById('prefix').value;
   const vad_filter = document.getElementById('vad_filter').checked;
 
-  const estimatedChunks = Math.ceil(file.size / (1024 * 1024));
-  progressText.textContent = '音频约 ' + (file.size / (1024 * 1024)).toFixed(1) + ' MB，预计分 ' + estimatedChunks + ' 块处理...';
+  const estimatedChunks = Math.ceil(audioBuffer.byteLength / (1024 * 1024));
+  progressText.textContent = (isVideo ? '音频提取完成，' : '') + '约 ' + (audioBuffer.byteLength / (1024 * 1024)).toFixed(1) + ' MB，预计分 ' + estimatedChunks + ' 块处理...';
 
   const params = new URLSearchParams({
     task,
@@ -285,7 +372,7 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
     const response = await fetch('/raw?' + params.toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body: await file.arrayBuffer()
+      body: audioBuffer
     });
 
     if (!response.ok) {
@@ -365,7 +452,7 @@ document.getElementById('urlSubmitBtn').addEventListener('click', async () => {
 
 // 下载 SRT
 downloadBtn.addEventListener('click', () => {
-  const fileName = (document.getElementById('audioFile').files[0]?.name || document.getElementById('audioUrl').value.split('/').pop() || 'subtitles').replace(/\.[^/.]+$/, '') + '.srt';
+  const fileName = (uploadedFileName || document.getElementById('audioUrl').value.split('/').pop() || 'subtitles').replace(/\.[^/.]+$/, '') + '.srt';
   const blob = new Blob([srtContent], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
