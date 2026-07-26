@@ -146,9 +146,9 @@ async function handleUpload(request, url, env) {
 
 /** GET /url - 通过远程 URL 转写音频 */
 async function handleUrlTranscription(url, env) {
-  const audioUrl = url.searchParams.get('url');
+  const audioUrl = url.searchParams.get('audio_url');
   if (!audioUrl) {
-    return new Response("Missing 'url' query parameter", { status: 400 });
+    return new Response("Missing 'audio_url' query parameter", { status: 400 });
   }
 
   const params = parseParams(url);

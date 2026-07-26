@@ -337,7 +337,7 @@ document.getElementById('urlSubmitBtn').addEventListener('click', async () => {
     ...(initial_prompt && { initial_prompt }),
     ...(prefix && { prefix }),
     vad_filter: vad_filter.toString(),
-    url: audioUrl
+    audio_url: audioUrl
   });
 
   try {
