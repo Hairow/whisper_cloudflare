@@ -26,10 +26,10 @@ export default {
 
       // 代理 ffmpeg CDN 文件，同源提供以解决 Worker 跨域问题
       if (url.pathname.startsWith('/ffmpeg/')) {
-        return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd' + url.pathname.slice(7));
+        return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/' + url.pathname.slice(8));
       }
       if (url.pathname.startsWith('/ffmpeg-core/')) {
-        return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd' + url.pathname.slice(13));
+        return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/' + url.pathname.slice(14));
       }
 
       return new Response('Not Found', { status: 404 });
