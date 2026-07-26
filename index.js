@@ -19,8 +19,8 @@ export default {
         return handleUrlTranscription(url, env);
       }
 
-      // POST /raw 或 /srt - 上传音频并转写
-      if (request.method === 'POST') {
+      // POST /raw - 上传音频并转写
+      if (request.method === 'POST' && url.pathname === '/raw') {
         return handleUpload(request, url, env);
       }
 
@@ -107,7 +107,7 @@ async function processChunks(chunks, env, params) {
 
 // =================== 路由处理 ===================
 
-/** POST /raw 或 /srt - 上传音频文件 */
+/** POST /raw - 上传音频文件 */
 async function handleUpload(request, url, env) {
   const contentType = request.headers.get('content-type') || '';
   if (!contentType.includes('application/octet-stream')) {
@@ -127,36 +127,13 @@ async function handleUpload(request, url, env) {
     return Response.json({ error: "An unexpected error occurred: " + e });
   }
 
-  if (url.pathname === '/raw') {
-    return Response.json({
-      text: result.text,
-      segments: result.segments,
-      chunkCount: result.chunkCount,
-      errors: result.errors,
-    });
-  }
-
-  if (url.pathname === '/srt') {
-    const srt = convertWordsToSRT(result.segments);
-    return new Response(srt, {
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Content-Disposition': 'inline; filename="subtitles.srt"'
-      }
-    });
-  }
-
-  if (url.pathname === '/vtt') {
-    const vtt = convertSegmentsToVTT(result.segments);
-    return new Response(vtt, {
-      headers: {
-        'Content-Type': 'text/vtt; charset=utf-8',
-        'Content-Disposition': 'inline; filename="subtitles.vtt"'
-      }
-    });
-  }
-
-  return new Response('Not Found', { status: 404 });
+  return Response.json({
+    text: result.text,
+    segments: result.segments,
+    vtt: convertSegmentsToVTT(result.segments),
+    chunkCount: result.chunkCount,
+    errors: result.errors,
+  });
 }
 
 /** GET /url - 通过远程 URL 转写音频 */
@@ -193,6 +170,7 @@ async function handleUrlTranscription(url, env) {
   return Response.json({
     text: result.text,
     segments: result.segments,
+    vtt: convertSegmentsToVTT(result.segments),
     chunkCount: result.chunkCount,
     errors: result.errors,
   });
@@ -209,32 +187,6 @@ function parseParams(url) {
     initial_prompt: url.searchParams.get('initial_prompt') || null,
     prefix: url.searchParams.get('prefix') || null,
   };
-}
-
-/** segments 转为 SRT 格式 */
-function convertWordsToSRT(segments) {
-  if (!Array.isArray(segments) || segments.length === 0) {
-    return 'No transcription data.';
-  }
-
-  let srt = '';
-  const LF = '\n';
-
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    srt += `${i + 1}${LF}${formatSRTTime(seg.start)} --> ${formatSRTTime(seg.end)}${LF}${seg.text}${LF}${LF}`;
-  }
-
-  return srt;
-}
-
-/** 秒数 → HH:MM:SS,ms */
-function formatSRTTime(seconds) {
-  const ms = Math.floor((seconds % 1) * 1000);
-  const s = Math.floor(seconds) % 60;
-  const m = Math.floor(seconds / 60) % 60;
-  const h = Math.floor(seconds / 3600);
-  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
 }
 
 function pad(num, size = 2) {
