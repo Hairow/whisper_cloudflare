@@ -214,7 +214,7 @@
     <h2>上传文件转写</h2>
     <label>音频 / 视频文件:</label>
     <input type="file" id="audioFile" accept="audio/*,video/*" required />
-    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持音频和视频格式，视频文件将自动提取音频。限制 50 MB，超大文件请切换到「通过 URL 转写」</div>
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持音频和视频格式，视频文件将自动提取音频。超大文件请切换到「通过 URL 转写」</div>
     <button type="submit" id="uploadSubmitBtn">开始转写</button>
   </div>
 
@@ -367,30 +367,8 @@
       setTimeout(() => { progressContainer.style.display = 'none'; }, 500);
     }
 
-    /**
-     * 将音频降到 8kHz 采样率，减小文件体积约 50%
-     * 16kHz mono 16-bit WAV: ~1875 KB/s  →  8kHz: ~937 KB/s
-     * 140MB 可降到约 70MB，在 Cloudflare Workers 100MB 限制内
-     */
-    async function downsampleAudio(wavBuffer) {
-      const ff = await getFFmpeg();
-      const inputName = 'big.wav';
-      const outputName = 'small.wav';
-      await ff.writeFile(inputName, new Uint8Array(wavBuffer));
-      await ff.exec([
-        '-i', inputName,
-        '-vn',
-        '-ac', '1',
-        '-ar', '8000',           // 8kHz 采样率
-        '-sample_fmt', 's16',
-        '-f', 'wav',
-        outputName
-      ]);
-      const data = (await ff.readFile(outputName)).buffer;
-      await ff.deleteFile(inputName);
-      await ff.deleteFile(outputName);
-      return data;
-    }
+    // 上传大小上限（Cloudflare Workers 免费计划 body 限制 100MB，留余量）
+    const MAX_UPLOAD_BYTES = 95 * 1024 * 1024;
 
     // 文件上传转写
     document.getElementById('uploadSubmitBtn').addEventListener('click', async () => {
@@ -413,9 +391,21 @@
           resultBox.value = '音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly，或尝试用本地工具先提取音频。';
           return;
         }
-        progressText.textContent = '音频提取完成（' + (audioBuffer.byteLength / (1024 * 1024)).toFixed(1) + ' MB），开始处理...';
+        const audioMB = (audioBuffer.byteLength / (1024 * 1024)).toFixed(1);
+        if (audioBuffer.byteLength > MAX_UPLOAD_BYTES) {
+          progressContainer.style.display = 'none';
+          resultBox.value = '提取的音频文件过大（' + audioMB + ' MB），超出上传限制（95 MB）。\n\n请使用更短的视频文件。';
+          return;
+        }
+        progressText.textContent = '音频提取完成（' + audioMB + ' MB），开始处理...';
       } else {
         uploadedFileName = file.name;
+        if (file.size > MAX_UPLOAD_BYTES) {
+          const fileMB = (file.size / (1024 * 1024)).toFixed(1);
+          progressContainer.style.display = 'none';
+          resultBox.value = '音频文件过大（' + fileMB + ' MB），超出上传限制（95 MB）。\n\n请使用更小的文件或通过「通过 URL 转写」上传。';
+          return;
+        }
         audioBuffer = await file.arrayBuffer();
       }
 
@@ -434,18 +424,13 @@
       });
 
       try {
-        let data;
-        if (audioBuffer.byteLength > UPLOAD_CHUNK_SIZE) {
-          data = await uploadLargeAudio(audioBuffer, params);
-        } else {
-          const resp = await fetch('/raw?' + params.toString(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/octet-stream' },
-            body: audioBuffer
-          });
-          if (!resp.ok) throw new Error(await resp.text());
-          data = await resp.json();
-        }
+        const resp = await fetch('/raw?' + params.toString(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: audioBuffer
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
 
         if (!data || !data.segments) {
           srtContent = 'No transcription data.';
