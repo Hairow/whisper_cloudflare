@@ -199,7 +199,7 @@
       margin-top: 0;
     }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="/ffmpeg/ffmpeg.js"></script>
 </head>
 
 <body>
@@ -275,21 +275,14 @@
 
     async function getFFmpeg() {
       if (ffmpeg) return ffmpeg;
-      progressText.textContent = '正在加载音频提取引擎（首次约 30 MB 下载）...';
       ffmpeg = new FFmpegWASM.FFmpeg();
       ffmpeg.on('progress', ({ progress }) => {
         progressBar.style.width = Math.round(progress * 100) + '%';
         progressText.textContent = '加载引擎中... ' + Math.round(progress * 100) + '%';
       });
       await ffmpeg.load({
-        coreURL: await FFmpegWASM.toBlobURL(
-          'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-          'text/javascript'
-        ),
-        wasmURL: await FFmpegWASM.toBlobURL(
-          'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-          'application/wasm'
-        ),
+        coreURL: '/ffmpeg-core/ffmpeg-core.js',
+        wasmURL: '/ffmpeg-core/ffmpeg-core.wasm',
       });
       return ffmpeg;
     }
@@ -374,18 +367,36 @@
       setTimeout(() => { progressContainer.style.display = 'none'; }, 500);
     }
 
+    /**
+     * 将音频降到 8kHz 采样率，减小文件体积约 50%
+     * 16kHz mono 16-bit WAV: ~1875 KB/s  →  8kHz: ~937 KB/s
+     * 140MB 可降到约 70MB，在 Cloudflare Workers 100MB 限制内
+     */
+    async function downsampleAudio(wavBuffer) {
+      const ff = await getFFmpeg();
+      const inputName = 'big.wav';
+      const outputName = 'small.wav';
+      await ff.writeFile(inputName, new Uint8Array(wavBuffer));
+      await ff.exec([
+        '-i', inputName,
+        '-vn',
+        '-ac', '1',
+        '-ar', '8000',           // 8kHz 采样率
+        '-sample_fmt', 's16',
+        '-f', 'wav',
+        outputName
+      ]);
+      const data = (await ff.readFile(outputName)).buffer;
+      await ff.deleteFile(inputName);
+      await ff.deleteFile(outputName);
+      return data;
+    }
+
     // 文件上传转写
     document.getElementById('uploadSubmitBtn').addEventListener('click', async () => {
       const fileInput = document.getElementById('audioFile');
       const file = fileInput.files[0];
       if (!file) return alert('Please select a file.');
-
-      // Cloudflare Workers 免费计划请求体限制 100MB，预留余量设为 50MB
-      const MAX_SIZE = 50 * 1024 * 1024;
-      if (!isVideoFile(file) && file.size > MAX_SIZE) {
-        alert('文件过大（' + (file.size / (1024 * 1024)).toFixed(1) + ' MB），最大支持 50 MB。\n请使用更小的文件或通过 URL 转写。');
-        return;
-      }
 
       showProgress();
 
@@ -393,7 +404,6 @@
       const isVideo = isVideoFile(file);
 
       if (isVideo) {
-        // 视频文件：先提取音频
         progressText.textContent = '检测到视频文件，准备提取音频...';
         uploadedFileName = file.name;
         try {
@@ -403,7 +413,7 @@
           resultBox.value = '音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly，或尝试用本地工具先提取音频。';
           return;
         }
-        progressText.textContent = '音频提取完成（' + (audioBuffer.byteLength / (1024 * 1024)).toFixed(1) + ' MB），开始转写...';
+        progressText.textContent = '音频提取完成（' + (audioBuffer.byteLength / (1024 * 1024)).toFixed(1) + ' MB），开始处理...';
       } else {
         uploadedFileName = file.name;
         audioBuffer = await file.arrayBuffer();
@@ -415,9 +425,6 @@
       const prefix = document.getElementById('prefix').value;
       const vad_filter = document.getElementById('vad_filter').checked;
 
-      const estimatedChunks = Math.ceil(audioBuffer.byteLength / (1024 * 1024));
-      progressText.textContent = (isVideo ? '音频提取完成，' : '') + '约 ' + (audioBuffer.byteLength / (1024 * 1024)).toFixed(1) + ' MB，预计分 ' + estimatedChunks + ' 块处理...';
-
       const params = new URLSearchParams({
         task,
         ...(language && { language }),
@@ -427,20 +434,18 @@
       });
 
       try {
-        const response = await fetch('/raw?' + params.toString(), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: audioBuffer
-        });
-
-        if (!response.ok) {
-          const error = await response.text();
-          resultBox.value = 'Error: ' + error;
-          progressContainer.style.display = 'none';
-          return;
+        let data;
+        if (audioBuffer.byteLength > UPLOAD_CHUNK_SIZE) {
+          data = await uploadLargeAudio(audioBuffer, params);
+        } else {
+          const resp = await fetch('/raw?' + params.toString(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: audioBuffer
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          data = await resp.json();
         }
-
-        const data = await response.json();
 
         if (!data || !data.segments) {
           srtContent = 'No transcription data.';
