@@ -1,429 +1,229 @@
+// 分块大小：1MB（官方推荐值）
+const CHUNK_SIZE = 1024 * 1024;
+
+import HTML_PAGE from './index.html';
+
 export default {
     async fetch(request, env) {
       const url = new URL(request.url);
-      if (url.pathname === '/') {
-        return new Response(renderHTMLPage(), {
-          headers: {
-            'Content-Type': 'text/html; charset=utf-8',
-          }
+
+      // GET / - 返回前端页面
+      if (request.method === 'GET' && url.pathname === '/') {
+        return new Response(HTML_PAGE, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
         });
       }
-  
-      if (request.method !== 'POST') {
-        return new Response('Only POST method is supported', { status: 405 });
+
+      // GET /url - 通过 URL 转写远程音频
+      if (request.method === 'GET' && url.pathname === '/url') {
+        return handleUrlTranscription(url, env);
       }
-  
-      const contentType = request.headers.get('content-type') || '';
-      if (!contentType.includes('application/octet-stream')) {
-        return new Response('Invalid content type. Use application/octet-stream.', { status: 400 });
+
+      // POST /raw 或 /srt - 上传音频并转写
+      if (request.method === 'POST') {
+        return handleUpload(request, url, env);
       }
-  
-      // 解析 query 参数
-      const task = url.searchParams.get('task') || 'transcribe'; 
-      // translate
-      const language = url.searchParams.get('language') || null;
-      const vad_filter = url.searchParams.get('vad_filter') === 'true';
-      const initial_prompt = url.searchParams.get('initial_prompt') || null;
-      const prefix = url.searchParams.get('prefix') || null;
-  
-      const blob = await request.arrayBuffer();
-  
-      const inputs = {
-        audio: arrayBufferToBase64(blob),
-        task,
-        vad_filter,
-      };
-  
-      if (language) inputs.language = language;
-      if (initial_prompt) inputs.initial_prompt = initial_prompt;
-      if (prefix) inputs.prefix = prefix;
-  
-      let aiResponse;
-      try {
-        aiResponse = await env.AI.run("@cf/openai/whisper-large-v3-turbo", inputs);
-      } catch (e) {
-        console.error(e);
-        return Response.json({ error: "An unexpected error occurred: " + e });
-      }
-  
-      if (url.pathname === '/raw') {
-        return Response.json({ response: aiResponse });
-      }
-  
-      if (url.pathname === '/srt') {
-        const segments = aiResponse.segments || [];
-        const srt = convertWordsToSRT(segments);
-        return new Response(srt, {
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Content-Disposition': 'inline; filename="subtitles.srt"'
-          }
-        });
-      }
-  
+
       return new Response('Not Found', { status: 404 });
     }
+};
+
+// =================== 分块处理核心逻辑 ===================
+
+/**
+ * 将音频 ArrayBuffer 按固定大小切为多个块
+ * 每个块都是独立的 ArrayBuffer 切片（零拷贝，共享底层内存）
+ */
+function chunkAudio(buffer) {
+  const chunks = [];
+  for (let i = 0; i < buffer.byteLength; i += CHUNK_SIZE) {
+    chunks.push(buffer.slice(i, Math.min(i + CHUNK_SIZE, buffer.byteLength)));
+  }
+  return chunks;
+}
+
+/**
+ * 转写单个音频块
+ * @returns {{ text: string, segments: Array }} Whisper 返回的结果
+ */
+async function transcribeChunk(chunk, env, params) {
+  const inputs = {
+    audio: [...new Uint8Array(chunk)],
+    task: params.task,
+    vad_filter: params.vad_filter,
   };
-  
-  function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  }
-  
-  function convertWordsToSRT(segments) {
-    if (!Array.isArray(segments) || segments.length === 0) {
-      return 'No transcription data.';
-    }
-  
-    let srt = '';
-    let index = 1;
-    const LF = String.fromCharCode(10);
-  
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      const start = formatSRTTime(segment.start);
-      const end = formatSRTTime(segment.end);
-      srt += index + LF + start + ' --> ' + end + LF + segment.text + LF + LF;
-      index++;
-    }
-  
-    return srt;
-  }
-  
-  function formatSRTTime(seconds) {
-    const ms = Math.floor((seconds % 1) * 1000);
-    const s = Math.floor(seconds) % 60;
-    const m = Math.floor(seconds / 60) % 60;
-    const h = Math.floor(seconds / 3600);
-  
-    return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
-  }
-  
-  function pad(num, size = 2) {
-    return num.toString().padStart(size, '0');
-  }
-  
-  function isChinese(char) {
-    return /[\u4e00-\u9fa5]/.test(char);
-  }
-  function renderHTMLPage() {
-    return `
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <title>Whisper Transcription</title>
-  <!-- <link rel="icon" href="https://static.hzchu.top/favicon.ico"> -->
-  <style>
-    :root {
-      --primary-color: #4a90e2;
-      --border-radius: 8px;
-      --spacing: 20px;
-    }
+  if (params.language) inputs.language = params.language;
+  if (params.initial_prompt) inputs.initial_prompt = params.initial_prompt;
+  if (params.prefix) inputs.prefix = params.prefix;
 
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      padding: var(--spacing);
-      max-width: 800px;
-      margin: 0 auto;
-      background-color: #f5f7fa;
-      color: #333;
-      line-height: 1.6;
-    }
+  return await env.AI.run("@cf/openai/whisper-large-v3-turbo", inputs);
+}
 
-    h1, h2 {
-      color: #2c3e50;
-      margin-bottom: var(--spacing);
-    }
+/**
+ * 处理所有音频块，返回合并后的结果
+ * - text: 合并的纯文本
+ * - segments: 时间戳已偏移为全局时间的 segments 数组
+ * - chunkCount: 总块数
+ * - errors: 失败的块索引列表
+ */
+async function processChunks(chunks, env, params) {
+  let fullText = '';
+  let allSegments = [];
+  let timeOffset = 0;
+  const errors = [];
 
-    form {
-      background: white;
-      padding: var(--spacing);
-      border-radius: var(--border-radius);
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    }
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      const result = await transcribeChunk(chunks[i], env, params);
+      fullText += result.text + '\n';
 
-    label {
-      display: block;
-      margin-top: 15px;
-      font-weight: 500;
-      color: #4a5568;
-    }
-
-    input[type="file"],
-    input[type="text"],
-    select {
-      width: 100%;
-      padding: 10px;
-      margin: 8px 0;
-      border: 1px solid #ddd;
-      border-radius: var(--border-radius);
-      box-sizing: border-box;
-    }
-
-    input[type="checkbox"] {
-      margin-right: 8px;
-    }
-
-    button {
-      background-color: var(--primary-color);
-      color: white;
-      padding: 12px 20px;
-      border: none;
-      border-radius: var(--border-radius);
-      cursor: pointer;
-      font-size: 16px;
-      margin-top: 15px;
-      transition: background-color 0.3s;
-    }
-
-    button:hover {
-      background-color: #357abd;
-    }
-
-    button:disabled {
-      background-color: #ccc;
-      cursor: not-allowed;
-    }
-
-    textarea {
-      width: 100%;
-      height: 200px;
-      margin-top: 10px;
-      padding: 15px;
-      border: 1px solid #ddd;
-      border-radius: var(--border-radius);
-      box-sizing: border-box;
-      font-family: monospace;
-      resize: vertical;
-    }
-
-    #downloadBtn {
-      background-color: #27ae60;
-    }
-
-    #downloadBtn:hover {
-      background-color: #219a52;
-    }
-
-    @media (max-width: 600px) {
-      body {
-        padding: 10px;
-      }
-      
-      form {
-        padding: 15px;
-      }
-    }
-
-    #progressContainer {
-      display: none;
-      margin: 20px 0;
-      background: #f0f0f0;
-      border-radius: var(--border-radius);
-      padding: 10px;
-      text-align: center;
-    }
-
-    .progress-bar {
-      width: 100%;
-      height: 20px;
-      background-color: #ddd;
-      border-radius: 10px;
-      overflow: hidden;
-    }
-
-    .progress {
-      width: 0%;
-      height: 100%;
-      background-color: var(--primary-color);
-      transition: width 0.3s ease;
-    }
-
-    .progress-text {
-      margin-top: 8px;
-      color: #666;
-    }
-  </style>
-</head>
-<body>
-  <h1>音频转写</h1>
-  <form id="uploadForm">
-    <label>音频文件 (WAV/MP3):</label>
-    <input type="file" id="audioFile" accept="audio/*" required />
-
-    <label>任务:</label>
-    <select id="task">
-      <option value="transcribe">Transcribe</option>
-      <option value="translate">Translate</option>
-    </select>
-
-    <label>语言 (optional):</label>
-    <input type="text" id="language" placeholder="e.g. en, zh, ja" />
-
-    <label>初始提示 (optional):</label>
-    <input type="text" id="initial_prompt"  placeholder="以下是普通话句子。"/>
-
-    <label>前缀 (optional):</label>
-    <input type="text" id="prefix" />
-
-    <label><input type="checkbox" id="vad_filter" checked />启用VAD过滤</label>
-
-    <button type="submit">提交</button>
-  </form>
-
-  <div id="progressContainer">
-    <div class="progress-bar">
-      <div class="progress" id="progressBar"></div>
-    </div>
-    <div class="progress-text">处理中... 请稍候</div>
-  </div>
-
-  <h2>结果 (SRT):</h2>
-  <textarea id="result" readonly></textarea>
-  <button id="downloadBtn" disabled>下载SRT</button>
-  <script>
-    const resultBox = document.getElementById('result');
-    const downloadBtn = document.getElementById('downloadBtn');
-    const progressContainer = document.getElementById('progressContainer');
-    const progressBar = document.getElementById('progressBar');
-    let srtContent = '';
-
-    // 将秒数转换为SRT时间格式
-    function formatSRTTime(seconds) {
-      const ms = Math.floor((seconds % 1) * 1000);
-      const s = Math.floor(seconds) % 60;
-      const m = Math.floor(seconds / 60) % 60;
-      const h = Math.floor(seconds / 3600);
-
-      return pad(h) + ':' + pad(m) + ':' + pad(s) + ',' + pad(ms, 3);
-    }
-
-    // 数字补零
-    function pad(num, size = 2) {
-      return num.toString().padStart(size, '0');
-    }
-    // 将segments数组转换为SRT格式
-    function convertWordsToSRT(segments) {
-      if (!Array.isArray(segments) || segments.length === 0) {
-        return 'No transcription data.';
-      }
-
-      let srt = '';
-      let index = 1;
-      const LF = String.fromCharCode(10);
-
-      for (let i = 0; i < segments.length; i++) {
-        const segment = segments[i];
-        const start = formatSRTTime(segment.start);
-        const end = formatSRTTime(segment.end);
-        srt += index + LF + start + ' --> ' + end + LF + segment.text + LF + LF;
-        index++;
-      }
-
-      return srt;
-    }
-
-    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-
-      const file = document.getElementById('audioFile').files[0];
-      if (!file) return alert('Please select a file.');
-
-      // 显示进度条并重置状态
-      progressContainer.style.display = 'block';
-      progressBar.style.width = '0%';
-      resultBox.value = '';
-      downloadBtn.disabled = true;
-
-      const task = document.getElementById('task').value;
-      const language = document.getElementById('language').value;
-      const initial_prompt = document.getElementById('initial_prompt').value;
-      const prefix = document.getElementById('prefix').value;
-      const vad_filter = document.getElementById('vad_filter').checked;
-
-      const params = new URLSearchParams({
-        task,
-        ...(language && { language }),
-        ...(initial_prompt && { initial_prompt }),
-        ...(prefix && { prefix }),
-        vad_filter: vad_filter.toString()
-      });
-
-      try {
-        // 启动进度条动画
-        let progress = 0;
-        const totalTime = 20000; // 20秒
-        const updateInterval = 200; // 每200ms更新一次
-        const progressStep = (90 / (totalTime / updateInterval)); // 90%分成100份
-        
-        const progressInterval = setInterval(() => {
-          if (progress < 90) {
-            progress += progressStep;
-            progressBar.style.width = progress + '%';
-          }
-        }, updateInterval);
-
-        // 从/raw路由获取数据
-        const response = await fetch('/raw?' + params.toString(), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: await file.arrayBuffer()
-        });
-
-        if (!response.ok) {
-          clearInterval(progressInterval);
-          const error = await response.text();
-          resultBox.value = 'Error: ' + error;
-          progressContainer.style.display = 'none';
-          return;
+      if (result.segments && result.segments.length > 0) {
+        // 将当前块的时间戳偏移为全局时间
+        for (const seg of result.segments) {
+          allSegments.push({
+            start: seg.start + timeOffset,
+            end: seg.end + timeOffset,
+            text: seg.text,
+          });
         }
+        // 累加时间偏移（用本块最后一段的结束时间作为下一块的起点）
+        const lastSeg = result.segments[result.segments.length - 1];
+        timeOffset += lastSeg.end;
+      }
+    } catch (e) {
+      console.error(`Chunk ${i} failed:`, e);
+      errors.push(i);
+      fullText += `[块 ${i} 转写失败]\n`;
+    }
+  }
 
-        // 解析JSON响应并转换为SRT格式
-        const rawData = await response.json();
-        
-        if (!rawData || !rawData.response || !rawData.response.segments) {
-          srtContent = 'No transcription data.';
-        } else {
-          srtContent = convertWordsToSRT(rawData.response.segments);
-        }
-        
-        // 完成进度条动画
-        clearInterval(progressInterval);
-        progressBar.style.width = '100%';
-        setTimeout(() => {
-          progressContainer.style.display = 'none';
-        }, 500);
+  return {
+    text: fullText.trim(),
+    segments: allSegments,
+    chunkCount: chunks.length,
+    errors,
+  };
+}
 
-        resultBox.value = srtContent;
-        downloadBtn.disabled = false;
-      } catch (error) {
-        progressContainer.style.display = 'none';
-        resultBox.value = 'Error: ' + error.message;
-        downloadBtn.disabled = true;
+// =================== 路由处理 ===================
+
+/** POST /raw 或 /srt - 上传音频文件 */
+async function handleUpload(request, url, env) {
+  const contentType = request.headers.get('content-type') || '';
+  if (!contentType.includes('application/octet-stream')) {
+    return new Response('Invalid content type. Use application/octet-stream.', { status: 400 });
+  }
+
+  const params = parseParams(url);
+
+  const blob = await request.arrayBuffer();
+  const chunks = chunkAudio(blob);
+
+  let result;
+  try {
+    result = await processChunks(chunks, env, params);
+  } catch (e) {
+    console.error(e);
+    return Response.json({ error: "An unexpected error occurred: " + e });
+  }
+
+  if (url.pathname === '/raw') {
+    return Response.json({ response: result });
+  }
+
+  if (url.pathname === '/srt') {
+    const srt = convertWordsToSRT(result.segments);
+    return new Response(srt, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Disposition': 'inline; filename="subtitles.srt"'
       }
     });
-
-    downloadBtn.addEventListener('click', () => {
-      // 获取原始文件名，并将扩展名改为.srt
-      const originalFileName = document.getElementById('audioFile').files[0].name;
-      const srtFileName = originalFileName.replace(/\.[^/.]+$/, '') + '.srt';
-      
-      const blob = new Blob([srtContent], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = srtFileName;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
-  </script>
-</body>
-</html>
-    `;
   }
-  
+
+  return new Response('Not Found', { status: 404 });
+}
+
+/** GET /url - 通过远程 URL 转写音频 */
+async function handleUrlTranscription(url, env) {
+  const audioUrl = url.searchParams.get('url');
+  if (!audioUrl) {
+    return new Response("Missing 'url' query parameter", { status: 400 });
+  }
+
+  const params = parseParams(url);
+
+  // 下载远程音频（跟随重定向）
+  let audioResponse;
+  try {
+    audioResponse = await fetch(audioUrl, { redirect: 'follow' });
+    if (!audioResponse.ok) {
+      return new Response(`Failed to fetch audio: HTTP ${audioResponse.status}`, { status: 502 });
+    }
+  } catch (e) {
+    return new Response(`Failed to fetch audio: ${e.message}`, { status: 502 });
+  }
+
+  const blob = await audioResponse.arrayBuffer();
+  const chunks = chunkAudio(blob);
+
+  let result;
+  try {
+    result = await processChunks(chunks, env, params);
+  } catch (e) {
+    console.error(e);
+    return Response.json({ error: "An unexpected error occurred: " + e });
+  }
+
+  return Response.json({
+    text: result.text,
+    segments: result.segments,
+    chunkCount: result.chunkCount,
+    errors: result.errors,
+  });
+}
+
+// =================== 辅助函数 ===================
+
+/** 解析 URL 查询参数 */
+function parseParams(url) {
+  return {
+    task: url.searchParams.get('task') || 'transcribe',
+    language: url.searchParams.get('language') || null,
+    vad_filter: url.searchParams.get('vad_filter') === 'true',
+    initial_prompt: url.searchParams.get('initial_prompt') || null,
+    prefix: url.searchParams.get('prefix') || null,
+  };
+}
+
+/** segments 转为 SRT 格式 */
+function convertWordsToSRT(segments) {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return 'No transcription data.';
+  }
+
+  let srt = '';
+  const LF = '\n';
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    srt += `${i + 1}${LF}${formatSRTTime(seg.start)} --> ${formatSRTTime(seg.end)}${LF}${seg.text}${LF}${LF}`;
+  }
+
+  return srt;
+}
+
+/** 秒数 → HH:MM:SS,ms */
+function formatSRTTime(seconds) {
+  const ms = Math.floor((seconds % 1) * 1000);
+  const s = Math.floor(seconds) % 60;
+  const m = Math.floor(seconds / 60) % 60;
+  const h = Math.floor(seconds / 3600);
+  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
+}
+
+function pad(num, size = 2) {
+  return num.toString().padStart(size, '0');
+}
+
+
