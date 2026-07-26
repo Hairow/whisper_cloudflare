@@ -193,15 +193,18 @@
 
   <h2>结果 (SRT):</h2>
   <textarea id="result" readonly></textarea>
-  <button id="downloadBtn" disabled>下载 SRT</button>
+  <button id="downloadSrtBtn" disabled>下载 SRT</button>
+  <button id="downloadVttBtn" disabled>下载 VTT</button>
 
 <script>
 const resultBox = document.getElementById('result');
-const downloadBtn = document.getElementById('downloadBtn');
+const downloadSrtBtn = document.getElementById('downloadSrtBtn');
+const downloadVttBtn = document.getElementById('downloadVttBtn');
 const progressContainer = document.getElementById('progressContainer');
 const progressBar = document.getElementById('progressBar');
 const progressText = document.getElementById('progressText');
 let srtContent = '';
+let vttContent = '';
 let uploadedFileName = '';
 
 // =================== FFmpeg 视频音频提取 ===================
@@ -303,12 +306,35 @@ function convertWordsToSRT(segments) {
   return srt;
 }
 
+function convertSegmentsToVTT(segments) {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return 'WEBVTT\n\nNo transcription data.';
+  }
+  let vtt = 'WEBVTT\n\n';
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    vtt += (i + 1) + '\n';
+    vtt += formatVTTTime(seg.start) + ' --> ' + formatVTTTime(seg.end) + '\n';
+    vtt += seg.text + '\n\n';
+  }
+  return vtt;
+}
+
+function formatVTTTime(seconds) {
+  const ms = Math.floor((seconds % 1) * 1000);
+  const s = Math.floor(seconds) % 60;
+  const m = Math.floor(seconds / 60) % 60;
+  const h = Math.floor(seconds / 3600);
+  return pad(h) + ':' + pad(m) + ':' + pad(s) + '.' + pad(ms, 3);
+}
+
 function showProgress() {
   progressContainer.style.display = 'block';
   progressBar.style.width = '0%';
   progressText.textContent = '处理中... 请稍候';
   resultBox.value = '';
-  downloadBtn.disabled = true;
+  downloadSrtBtn.disabled = true;
+  downloadVttBtn.disabled = true;
 }
 
 function hideProgress() {
@@ -382,25 +408,30 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
       return;
     }
 
-    const rawData = await response.json();
+    const data = await response.json();
 
-    if (!rawData || !rawData.response || !rawData.response.segments) {
+    if (!data || !data.segments) {
       srtContent = 'No transcription data.';
+      vttContent = 'WEBVTT\n\nNo transcription data.';
     } else {
-      const result = rawData.response;
-      srtContent = convertWordsToSRT(result.segments);
-      if (result.errors && result.errors.length > 0) {
-        srtContent += '\n\n[警告] ' + result.errors.length + '/' + result.chunkCount + ' 个块处理失败';
+      srtContent = convertWordsToSRT(data.segments);
+      vttContent = convertSegmentsToVTT(data.segments);
+      if (data.errors && data.errors.length > 0) {
+        const warning = '\n\n[警告] ' + data.errors.length + '/' + data.chunkCount + ' 个块处理失败';
+        srtContent += warning;
+        vttContent += warning.replace(/\n/g, '\n').replace('[警告]', 'NOTE');
       }
     }
 
     hideProgress();
     resultBox.value = srtContent;
-    downloadBtn.disabled = false;
+    downloadSrtBtn.disabled = false;
+    downloadVttBtn.disabled = false;
   } catch (error) {
     progressContainer.style.display = 'none';
     resultBox.value = 'Error: ' + error.message;
-    downloadBtn.disabled = true;
+    downloadSrtBtn.disabled = true;
+    downloadVttBtn.disabled = true;
   }
 });
 
@@ -437,30 +468,43 @@ document.getElementById('urlSubmitBtn').addEventListener('click', async () => {
     }
     const data = await response.json();
     srtContent = convertWordsToSRT(data.segments || []);
+    vttContent = convertSegmentsToVTT(data.segments || []);
     if (data.errors && data.errors.length > 0) {
-      srtContent += '\n\n[警告] ' + data.errors.length + '/' + data.chunkCount + ' 个块处理失败';
+      const warning = '\n\n[警告] ' + data.errors.length + '/' + data.chunkCount + ' 个块处理失败';
+      srtContent += warning;
+      vttContent += '\n\nNOTE ' + data.errors.length + '/' + data.chunkCount + ' chunks failed';
     }
     hideProgress();
     resultBox.value = srtContent;
-    downloadBtn.disabled = false;
+    downloadSrtBtn.disabled = false;
+    downloadVttBtn.disabled = false;
   } catch (error) {
     progressContainer.style.display = 'none';
     resultBox.value = 'Error: ' + error.message;
-    downloadBtn.disabled = true;
+    downloadSrtBtn.disabled = true;
+    downloadVttBtn.disabled = true;
   }
 });
 
-// 下载 SRT
-downloadBtn.addEventListener('click', () => {
-  const fileName = (uploadedFileName || document.getElementById('audioUrl').value.split('/').pop() || 'subtitles').replace(/\.[^/.]+$/, '') + '.srt';
-  const blob = new Blob([srtContent], { type: 'text/plain;charset=utf-8' });
+function getBaseFileName() {
+  return (uploadedFileName || document.getElementById('audioUrl').value.split('/').pop() || 'subtitles').replace(/\.[^/.]+$/, '');
+}
+
+function downloadFile(content, ext, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = fileName;
+  a.download = getBaseFileName() + '.' + ext;
   a.click();
   URL.revokeObjectURL(url);
-});
+}
+
+// 下载 SRT
+downloadSrtBtn.addEventListener('click', () => downloadFile(srtContent, 'srt', 'text/plain;charset=utf-8'));
+
+// 下载 VTT
+downloadVttBtn.addEventListener('click', () => downloadFile(vttContent, 'vtt', 'text/vtt;charset=utf-8'));
 </script>
 </body>
 </html>

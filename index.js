@@ -128,7 +128,12 @@ async function handleUpload(request, url, env) {
   }
 
   if (url.pathname === '/raw') {
-    return Response.json({ response: result });
+    return Response.json({
+      text: result.text,
+      segments: result.segments,
+      chunkCount: result.chunkCount,
+      errors: result.errors,
+    });
   }
 
   if (url.pathname === '/srt') {
@@ -137,6 +142,16 @@ async function handleUpload(request, url, env) {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Content-Disposition': 'inline; filename="subtitles.srt"'
+      }
+    });
+  }
+
+  if (url.pathname === '/vtt') {
+    const vtt = convertSegmentsToVTT(result.segments);
+    return new Response(vtt, {
+      headers: {
+        'Content-Type': 'text/vtt; charset=utf-8',
+        'Content-Disposition': 'inline; filename="subtitles.vtt"'
       }
     });
   }
@@ -224,6 +239,28 @@ function formatSRTTime(seconds) {
 
 function pad(num, size = 2) {
   return num.toString().padStart(size, '0');
+}
+
+/** segments 转为 VTT 格式 */
+function convertSegmentsToVTT(segments) {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return 'WEBVTT\n\nNo transcription data.';
+  }
+  let vtt = 'WEBVTT\n\n';
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    vtt += `${i + 1}\n${formatVTTTime(seg.start)} --> ${formatVTTTime(seg.end)}\n${seg.text}\n\n`;
+  }
+  return vtt;
+}
+
+/** 秒数 → HH:MM:SS.ms（VTT 毫秒分隔符为 .） */
+function formatVTTTime(seconds) {
+  const ms = Math.floor((seconds % 1) * 1000);
+  const s = Math.floor(seconds) % 60;
+  const m = Math.floor(seconds / 60) % 60;
+  const h = Math.floor(seconds / 3600);
+  return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(ms, 3)}`;
 }
 
 /** ArrayBuffer → Base64 字符串 */
