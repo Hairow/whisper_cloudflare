@@ -534,6 +534,7 @@
 
       try {
         const audioData = await extractAudioForDownload(file);
+        console.log('after extractAudioForDownload')
         const audioMB = (audioData.byteLength / (1024 * 1024)).toFixed(1);
         const filename = file.name.replace(/\.[^/.]+$/, '') + '.wav';
 
