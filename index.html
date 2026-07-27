@@ -344,34 +344,19 @@
 
     // =================== 音频预处理（ffmpeg 切分） ===================
 
-    /** 流式读取文件并分块写入 ffmpeg 虚拟文件系统，避免整文件加载到内存 */
-    async function streamFileToFFmpeg(ff, file, fsName) {
-      const CHUNK = 50 * 1024 * 1024; // 每次读 50MB
-      const total = file.size;
-      let offset = 0;
-      while (offset < total) {
-        const pct = Math.round((offset / total) * 100);
-        progressBar.style.width = pct + '%';
-        progressText.textContent = '正在加载文件... ' + (offset / (1024 * 1024)).toFixed(0) + ' / ' + (total / (1024 * 1024)).toFixed(0) + ' MB';
-
-        // 让浏览器渲染进度条，避免动画卡死
-        await new Promise(r => requestAnimationFrame(r));
-
-        const end = Math.min(offset + CHUNK, total);
-        const buf = await file.slice(offset, end).arrayBuffer();
-        await ff.writeFile(fsName, new Uint8Array(buf), { offset });
-        offset = end;
-      }
-    }
-
     /** 将音频文件转为 16kHz 单声道 WAV 并按 1 分钟切分，返回 ArrayBuffer 数组 */
     async function prepareAudioForTranscription(file) {
       const ff = await getFFmpeg();
+      registerFFLog(ff);
 
       const inputExt = file.name.split('.').pop().toLowerCase();
       const inputName = 'input_trans.' + inputExt;
 
-      await streamFileToFFmpeg(ff, file, inputName);
+      // 一次性写入，避免 offset 分块在大文件时截断
+      {
+        const buffer = await file.arrayBuffer();
+        await ff.writeFile(inputName, new Uint8Array(buffer));
+      }
 
       await ff.exec([
         '-i', inputName,
