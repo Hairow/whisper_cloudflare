@@ -356,6 +356,9 @@
       {
         const buffer = await file.arrayBuffer();
         await ff.writeFile(inputName, new Uint8Array(buffer));
+        // 建议浏览器尽早回收 ArrayBuffer
+        buffer.detach?.();
+        if (typeof gc === 'function') gc();
       }
 
       await ff.exec([
@@ -493,6 +496,9 @@
       {
         const buffer = await file.arrayBuffer();
         await ff.writeFile(inputName, new Uint8Array(buffer));
+        // 建议浏览器尽早回收 ArrayBuffer
+        buffer.detach?.();
+        if (typeof gc === 'function') gc();
       }
 
       progressBar.style.width = '90%';
