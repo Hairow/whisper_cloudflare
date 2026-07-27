@@ -480,7 +480,7 @@
       ff.on('log', ({ message }) => { ffLogs.push(message); });
     }
 
-    /** 从视频中提取音频用于下载（16kHz 单声道 WAV） */
+    /** 从视频中提取音频用于下载（编码为 MP3） */
     async function extractAudioForDownload(file) {
       const ff = await getFFmpeg();
       registerFFLog(ff);
@@ -489,7 +489,7 @@
 
       const inputExt = file.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + inputExt;
-      const outputName = 'output.wav';
+      const outputName = 'audio.mp3';
 
       // 一次性加载整个文件写入 MEMFS，避免 offset 模式在大文件时截断
       // 写入完成后 buffer 离开块作用域，GC 可立即回收
@@ -502,14 +502,13 @@
       }
 
       progressBar.style.width = '90%';
-      progressText.textContent = '正在从视频中提取音频...';
+      progressText.textContent = '正在从视频中提取音频，编码为 MP3...';
 
       await ff.exec([
         '-i', inputName,
         '-vn',
-        '-acodec', 'pcm_s16le',
-        '-ar', '16000',
-        '-ac', '1',
+        '-c:a', 'libmp3lame',
+        '-q:a', '2',
         outputName
       ]);
 
@@ -517,7 +516,11 @@
       await ff.deleteFile(inputName);
       await ff.deleteFile(outputName);
 
-      return data;
+      return {
+        data,
+        ext: 'mp3',
+        mime: 'audio/mpeg',
+      };
     }
 
     // 视频文件大小校验（ffmpeg.wasm 需将整个文件加载到内存，过大易 OOM）
@@ -549,12 +552,12 @@
       progressText.textContent = '检测到视频文件，准备提取音频...';
 
       try {
-        const audioData = await extractAudioForDownload(file);
-        const audioMB = (audioData.byteLength / (1024 * 1024)).toFixed(1);
-        const filename = file.name.replace(/\.[^/.]+$/, '') + '.wav';
+        const { data, ext, mime } = await extractAudioForDownload(file);
+        const audioMB = (data.byteLength / (1024 * 1024)).toFixed(1);
+        const filename = file.name.replace(/\.[^/.]+$/, '') + '.' + ext;
 
         // 直接触发下载，不在内存中保留数据
-        const blob = new Blob([audioData], { type: 'audio/wav' });
+        const blob = new Blob([data], { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
