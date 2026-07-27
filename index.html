@@ -87,14 +87,15 @@
 
     textarea {
       width: 100%;
-      height: 240px;
+      height: 360px;
       margin-top: 10px;
       padding: 15px;
       border: 1px solid #ddd;
       border-radius: var(--border-radius);
       box-sizing: border-box;
-      font-family: 'Courier New', monospace;
-      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
       resize: vertical;
     }
 
@@ -284,7 +285,7 @@
       ffmpeg = new FFmpegWASM.FFmpeg();
       ffmpeg.on('progress', ({ progress }) => {
         progressBar.style.width = Math.round(progress * 100) + '%';
-        progressText.textContent = '加载引擎中... ' + Math.round(progress * 100) + '%';
+        progressText.textContent = '处理中... ' + Math.round(progress * 100) + '%';
       });
       await ffmpeg.load({
         coreURL: '/ffmpeg-core/ffmpeg-core.js',
@@ -331,7 +332,7 @@
     function showProgress() {
       progressContainer.style.display = 'block';
       progressBar.style.width = '0%';
-      progressText.textContent = '处理中... 请稍候';
+      progressText.textContent = '开始处理中... 请稍候';
       resultBox.value = '';
       downloadSrtBtn.disabled = true;
     }
@@ -495,14 +496,22 @@
     async function extractAudioForDownload(file) {
       const ff = await getFFmpeg();
       registerFFLog(ff);
-      progressBar.style.width = '90%';
-      progressText.textContent = '正在从视频中提取音频...';
+      progressBar.style.width = '50%';
+      progressText.textContent = '正在加载视频文件（' + (file.size / (1024 * 1024)).toFixed(0) + ' MB）...';
 
       const inputExt = file.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + inputExt;
       const outputName = 'output.wav';
 
-      await streamFileToFFmpeg(ff, file, inputName);
+      // 一次性加载整个文件写入 MEMFS，避免 offset 模式在大文件时截断
+      // 写入完成后 buffer 离开块作用域，GC 可立即回收
+      {
+        const buffer = await file.arrayBuffer();
+        await ff.writeFile(inputName, new Uint8Array(buffer));
+      }
+
+      progressBar.style.width = '90%';
+      progressText.textContent = '正在从视频中提取音频...';
 
       await ff.exec([
         '-i', inputName,

@@ -1,5 +1,11 @@
 import HTML_PAGE from './index.html';
 
+// COOP/COEP 头，启用 SharedArrayBuffer 支持大内存 WASM
+const ISOLATION_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+};
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -7,7 +13,7 @@ export default {
     // GET / - 返回前端页面
     if (request.method === 'GET' && url.pathname === '/') {
       return new Response(HTML_PAGE, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        headers: { 'Content-Type': 'text/html; charset=utf-8', ...ISOLATION_HEADERS }
       });
     }
 
@@ -16,12 +22,12 @@ export default {
       return handleUpload(request, url, env);
     }
 
-    // 代理 ffmpeg CDN 文件，同源提供以解决 Worker 跨域问题
+    // 代理 ffmpeg CDN 文件，附加 COOP/COEP 头以满足 Worker 隔离要求
     if (url.pathname.startsWith('/ffmpeg/')) {
-      return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/' + url.pathname.slice(8));
+      return proxyWithIsolation('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/' + url.pathname.slice(8));
     }
     if (url.pathname.startsWith('/ffmpeg-core/')) {
-      return fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/' + url.pathname.slice(13));
+      return proxyWithIsolation('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/' + url.pathname.slice(13));
     }
 
     return new Response('Not Found', { status: 404 });
@@ -70,6 +76,20 @@ async function handleUpload(request, url, env) {
 }
 
 // =================== 辅助函数 ===================
+
+/** 代理 CDN 资源并附加跨域隔离头，满足 COEP require-corp 和 Worker 的隔离要求 */
+async function proxyWithIsolation(cdnUrl) {
+  const resp = await fetch(cdnUrl);
+  const headers = new Headers(resp.headers);
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+  headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  return new Response(resp.body, {
+    status: resp.status,
+    statusText: resp.statusText,
+    headers,
+  });
+}
 
 /** 解析 URL 查询参数 */
 function parseParams(url) {
