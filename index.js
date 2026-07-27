@@ -65,7 +65,16 @@ async function handleUpload(request, url, env) {
   const params = parseParams(url);
   const blob = await request.arrayBuffer();
 
-  const result = await transcribeChunk(blob, env, params);
+  let result;
+  try {
+    result = await transcribeChunk(blob, env, params);
+  } catch (e) {
+    const msg = String(e?.message || e || '');
+    if (msg.includes('quota') || msg.includes('exceeded') || msg.includes('limit')) {
+      return new Response('Daily free quota exceeded. Please try again after 00:00 UTC.', { status: 429 });
+    }
+    return new Response('Transcription failed: ' + msg, { status: 500 });
+  }
 
   return Response.json({
     text: result.text,
