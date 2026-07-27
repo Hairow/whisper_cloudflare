@@ -199,14 +199,14 @@
       margin-top: 0;
     }
 
-    details > summary {
+    details>summary {
       cursor: pointer;
       font-size: 1.5em;
       font-weight: 700;
       margin-bottom: 12px;
     }
 
-    details > summary::-webkit-details-marker {
+    details>summary::-webkit-details-marker {
       color: #888;
     }
   </style>
@@ -226,7 +226,8 @@
     <label>视频文件:</label>
     <input type="file" id="extractVideoFile" accept="video/*" required />
     <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式</div>
-    <div id="extractResult" style="display:none; margin-top:12px; padding:12px; background:#f0f9f0; border-radius:var(--border-radius);">
+    <div id="extractResult"
+      style="display:none; margin-top:12px; padding:12px; background:#f0f9f0; border-radius:var(--border-radius);">
       <span id="extractInfo"></span>
       <button id="extractDownloadBtn" style="margin-left:12px; background-color:#27ae60;">下载音频</button>
     </div>
@@ -241,7 +242,7 @@
     <button type="submit" id="uploadSubmitBtn">开始转写</button>
   </div>
 
-  <details id="configForm" open
+  <details id="configForm"
     style="background:white; padding:var(--spacing); border-radius:var(--border-radius); box-shadow:0 2px 10px rgba(0,0,0,0.1); margin-bottom:var(--spacing);">
     <summary>转写配置</summary>
     <label>任务:</label>
