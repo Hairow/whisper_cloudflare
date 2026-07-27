@@ -208,7 +208,6 @@
   <div class="tabs">
     <button class="tab active" data-tab="extract">提取音频</button>
     <button class="tab" data-tab="upload">上传文件转写</button>
-    <button class="tab" data-tab="url">通过 URL 转写</button>
   </div>
 
   <div class="tab-panel active" id="panel-extract">
@@ -229,13 +228,6 @@
     <input type="file" id="audioFile" accept="audio/*" required />
     <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 WAV、MP3 等常见音频格式。超大文件请切换到「通过 URL 转写」</div>
     <button type="submit" id="uploadSubmitBtn">开始转写</button>
-  </div>
-
-  <div class="tab-panel" id="panel-url">
-    <h2>通过 URL 转写</h2>
-    <label>音频文件 URL:</label>
-    <input type="text" id="audioUrl" placeholder="https://example.com/audio.wav" />
-    <button id="urlSubmitBtn">开始转写</button>
   </div>
 
   <div id="configForm"
@@ -380,8 +372,8 @@
       setTimeout(() => { progressContainer.style.display = 'none'; }, 500);
     }
 
-    // 上传大小上限（Cloudflare Workers 免费计划 body 限制 100MB，留余量）
-    const MAX_UPLOAD_BYTES = 95 * 1024 * 1024;
+    // 上传文件大小限制
+    const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
     // 文件上传转写
     document.getElementById('uploadSubmitBtn').addEventListener('click', async () => {
@@ -393,7 +385,7 @@
       if (file.size > MAX_UPLOAD_BYTES) {
         const fileMB = (file.size / (1024 * 1024)).toFixed(1);
         progressContainer.style.display = 'none';
-        resultBox.value = '音频文件过大（' + fileMB + ' MB），超出上传限制（95 MB）。\n\n请使用更小的文件或通过「通过 URL 转写」上传。';
+        resultBox.value = '音频文件过大（' + fileMB + ' MB），超出上传限制（20 MB）。\n\n请使用更小的文件或通过「通过 URL 转写」上传。';
         return;
       }
 
@@ -434,56 +426,6 @@
           }
         }
 
-        hideProgress();
-        resultBox.value = srtContent;
-        downloadSrtBtn.disabled = false;
-      } catch (error) {
-        progressContainer.style.display = 'none';
-        resultBox.value = 'Error: ' + error.message;
-        downloadSrtBtn.disabled = true;
-      }
-    });
-
-    // URL 转写
-    document.getElementById('urlSubmitBtn').addEventListener('click', async () => {
-      const audioUrl = document.getElementById('audioUrl').value.trim();
-      if (!audioUrl) return alert('请输入音频 URL');
-
-      showProgress();
-      progressText.textContent = '正在下载并转写远程音频...';
-
-      const task = document.getElementById('task').value;
-      const language = document.getElementById('language').value;
-      const initial_prompt = document.getElementById('initial_prompt').value;
-      const prefix = document.getElementById('prefix').value;
-      const vad_filter = document.getElementById('vad_filter').checked;
-
-      const baseParams = new URLSearchParams({
-        task,
-        ...(language && { language }),
-        ...(initial_prompt && { initial_prompt }),
-        ...(prefix && { prefix }),
-        vad_filter: vad_filter.toString(),
-        audio_url: audioUrl
-      });
-
-      try {
-        const response = await fetch('/url?' + baseParams.toString());
-        if (!response.ok) {
-          const error = await response.text();
-          resultBox.value = 'Error: ' + error;
-          progressContainer.style.display = 'none';
-          return;
-        }
-        const data = await response.json();
-        if (!data || !data.segments) {
-          srtContent = 'No transcription data.';
-        } else {
-          srtContent = convertWordsToSRT(data.segments);
-          if (data.errors && data.errors.length > 0) {
-            srtContent += '\n\n[警告] ' + data.errors.length + '/' + data.chunkCount + ' 个块处理失败';
-          }
-        }
         hideProgress();
         resultBox.value = srtContent;
         downloadSrtBtn.disabled = false;
@@ -565,7 +507,7 @@
     });
 
     function getBaseFileName() {
-      return (uploadedFileName || document.getElementById('audioUrl').value.split('/').pop() || 'subtitles').replace(/\.[^/.]+$/, '');
+      return (uploadedFileName || 'subtitles').replace(/\.[^/.]+$/, '');
     }
 
     function downloadFile(content, ext, mimeType) {

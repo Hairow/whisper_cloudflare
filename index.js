@@ -1,6 +1,9 @@
 // 分块大小：1MB（官方推荐值）
 const CHUNK_SIZE = 1024 * 1024;
 
+// 音频文件大小限制：20MB（Workers 免费计划内存限制）
+const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
+
 import HTML_PAGE from './index.html';
 
 export default {
@@ -12,11 +15,6 @@ export default {
       return new Response(HTML_PAGE, {
         headers: { 'Content-Type': 'text/html; charset=utf-8' }
       });
-    }
-
-    // GET /url - 通过 URL 转写远程音频
-    if (request.method === 'GET' && url.pathname === '/url') {
-      return handleUrlTranscription(url, env);
     }
 
     // POST /raw - 上传音频并转写
@@ -125,45 +123,11 @@ async function handleUpload(request, url, env) {
   const params = parseParams(url);
 
   const blob = await request.arrayBuffer();
-  const chunks = chunkAudio(blob);
 
-  let result;
-  try {
-    result = await processChunks(chunks, env, params);
-  } catch (e) {
-    console.error(e);
-    return Response.json({ error: "An unexpected error occurred: " + e });
+  if (blob.byteLength > MAX_AUDIO_BYTES) {
+    return new Response(`File too large (${(blob.byteLength / (1024 * 1024)).toFixed(1)} MB). Max 20 MB.`, { status: 400 });
   }
 
-  return Response.json({
-    text: result.text,
-    segments: result.segments,
-    chunkCount: result.chunkCount,
-    errors: result.errors,
-  });
-}
-
-/** GET /url - 通过远程 URL 转写音频 */
-async function handleUrlTranscription(url, env) {
-  const audioUrl = url.searchParams.get('audio_url');
-  if (!audioUrl) {
-    return new Response("Missing 'audio_url' query parameter", { status: 400 });
-  }
-
-  const params = parseParams(url);
-
-  // 下载远程音频（跟随重定向）
-  let audioResponse;
-  try {
-    audioResponse = await fetch(audioUrl, { redirect: 'follow' });
-    if (!audioResponse.ok) {
-      return new Response(`Failed to fetch audio: HTTP ${audioResponse.status}`, { status: 502 });
-    }
-  } catch (e) {
-    return new Response(`Failed to fetch audio: ${e.message}`, { status: 502 });
-  }
-
-  const blob = await audioResponse.arrayBuffer();
   const chunks = chunkAudio(blob);
 
   let result;
