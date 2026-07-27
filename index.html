@@ -198,6 +198,17 @@
     .tab-panel h2 {
       margin-top: 0;
     }
+
+    details > summary {
+      cursor: pointer;
+      font-size: 1.5em;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    details > summary::-webkit-details-marker {
+      color: #888;
+    }
   </style>
   <script src="/ffmpeg/ffmpeg.js"></script>
 </head>
@@ -230,9 +241,9 @@
     <button type="submit" id="uploadSubmitBtn">开始转写</button>
   </div>
 
-  <div id="configForm"
+  <details id="configForm" open
     style="background:white; padding:var(--spacing); border-radius:var(--border-radius); box-shadow:0 2px 10px rgba(0,0,0,0.1); margin-bottom:var(--spacing);">
-    <h2>转写配置</h2>
+    <summary>转写配置</summary>
     <label>任务:</label>
     <select id="task">
       <option value="transcribe">Transcribe（转写）</option>
@@ -245,7 +256,7 @@
     <label>前缀 (optional):</label>
     <input type="text" id="prefix" />
     <label><input type="checkbox" id="vad_filter" checked />启用 VAD 过滤</label>
-  </div>
+  </details>
 
   <div id="progressContainer">
     <div class="progress-bar">
