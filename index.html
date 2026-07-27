@@ -372,8 +372,45 @@
       setTimeout(() => { progressContainer.style.display = 'none'; }, 500);
     }
 
-    // 上传文件大小限制
-    const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+    // =================== 音频预处理（ffmpeg 切分） ===================
+
+    /** 将音频文件转为 16kHz 单声道 WAV 并按 1 分钟切分，返回 ArrayBuffer 数组 */
+    async function prepareAudioForTranscription(file) {
+      const ff = await getFFmpeg();
+
+      const inputExt = file.name.split('.').pop().toLowerCase();
+      const inputName = 'input_trans.' + inputExt;
+
+      await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+
+      await ff.exec([
+        '-i', inputName,
+        '-vn',
+        '-acodec', 'pcm_s16le',
+        '-ar', '16000',
+        '-ac', '1',
+        '-f', 'segment',
+        '-segment_time', '60',
+        'seg_%03d.wav'
+      ]);
+
+      const segments = [];
+      let i = 0;
+      while (true) {
+        const name = 'seg_' + String(i).padStart(3, '0') + '.wav';
+        try {
+          const data = await ff.readFile(name);
+          segments.push(data.buffer);
+          await ff.deleteFile(name);
+          i++;
+        } catch {
+          break;
+        }
+      }
+
+      await ff.deleteFile(inputName);
+      return segments;
+    }
 
     // 文件上传转写
     document.getElementById('uploadSubmitBtn').addEventListener('click', async () => {
@@ -382,58 +419,73 @@
       if (!file) return alert('Please select a file.');
 
       uploadedFileName = file.name;
-      if (file.size > MAX_UPLOAD_BYTES) {
-        const fileMB = (file.size / (1024 * 1024)).toFixed(1);
+      showProgress();
+
+      // 预处理：ffmpeg 切分为 1 分钟片段
+      let segments;
+      try {
+        progressText.textContent = '正在预处理音频，切分为 1 分钟片段...';
+        segments = await prepareAudioForTranscription(file);
+      } catch (e) {
         progressContainer.style.display = 'none';
-        resultBox.value = '音频文件过大（' + fileMB + ' MB），超出上传限制（20 MB）。\n\n请使用更小的文件或通过「通过 URL 转写」上传。';
+        resultBox.value = '音频预处理失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly。';
         return;
       }
 
-      showProgress();
-      progressText.textContent = '正在处理音频...';
-
-      const audioBuffer = await file.arrayBuffer();
-
-      const task = document.getElementById('task').value;
-      const language = document.getElementById('language').value;
-      const initial_prompt = document.getElementById('initial_prompt').value;
-      const prefix = document.getElementById('prefix').value;
-      const vad_filter = document.getElementById('vad_filter').checked;
+      const totalSegments = segments.length;
+      let allSegments = [];
+      let timeOffset = 0;
+      const errors = [];
 
       const params = new URLSearchParams({
-        task,
-        ...(language && { language }),
-        ...(initial_prompt && { initial_prompt }),
-        ...(prefix && { prefix }),
-        vad_filter: vad_filter.toString()
+        task: document.getElementById('task').value,
+        ...(document.getElementById('language').value && { language: document.getElementById('language').value }),
+        ...(document.getElementById('initial_prompt').value && { initial_prompt: document.getElementById('initial_prompt').value }),
+        ...(document.getElementById('prefix').value && { prefix: document.getElementById('prefix').value }),
+        vad_filter: document.getElementById('vad_filter').checked.toString()
       });
 
-      try {
-        const resp = await fetch('/raw?' + params.toString(), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: audioBuffer
-        });
-        if (!resp.ok) throw new Error(await resp.text());
-        const data = await resp.json();
+      for (let i = 0; i < totalSegments; i++) {
+        progressBar.style.width = Math.round((i / totalSegments) * 90) + '%';
+        progressText.textContent = '正在转写... 片段 ' + (i + 1) + '/' + totalSegments;
 
-        if (!data || !data.segments) {
-          srtContent = 'No transcription data.';
-        } else {
-          srtContent = convertWordsToSRT(data.segments);
-          if (data.errors && data.errors.length > 0) {
-            srtContent += '\n\n[警告] ' + data.errors.length + '/' + data.chunkCount + ' 个块处理失败';
+        try {
+          const resp = await fetch('/raw?' + params.toString(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: segments[i]
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          const data = await resp.json();
+
+          if (data.segments && data.segments.length > 0) {
+            for (const seg of data.segments) {
+              allSegments.push({
+                start: seg.start + timeOffset,
+                end: seg.end + timeOffset,
+                text: seg.text,
+              });
+            }
+            const lastSeg = data.segments[data.segments.length - 1];
+            timeOffset += lastSeg.end;
           }
+        } catch (err) {
+          errors.push(i);
         }
-
-        hideProgress();
-        resultBox.value = srtContent;
-        downloadSrtBtn.disabled = false;
-      } catch (error) {
-        progressContainer.style.display = 'none';
-        resultBox.value = 'Error: ' + error.message;
-        downloadSrtBtn.disabled = true;
       }
+
+      if (allSegments.length === 0) {
+        srtContent = errors.length > 0 ? '所有片段处理失败。' : 'No transcription data.';
+      } else {
+        srtContent = convertWordsToSRT(allSegments);
+        if (errors.length > 0) {
+          srtContent += '\n\n[警告] ' + errors.length + '/' + totalSegments + ' 个片段处理失败';
+        }
+      }
+
+      hideProgress();
+      resultBox.value = srtContent;
+      downloadSrtBtn.disabled = false;
     });
 
     // =================== 视频提取音频下载 ===================
@@ -441,7 +493,7 @@
     let extractedAudioData = null;
     let extractedFileName = '';
 
-    /** 从视频中提取音频用于下载（44.1kHz 立体声 WAV） */
+    /** 从视频中提取音频用于下载（16kHz 单声道 WAV） */
     async function extractAudioForDownload(file) {
       const ff = await getFFmpeg();
       progressBar.style.width = '90%';
