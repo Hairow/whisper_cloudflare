@@ -225,7 +225,7 @@
     <h2>视频提取音频</h2>
     <label>视频文件:</label>
     <input type="file" id="extractVideoFile" accept="video/*" required />
-    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式，文件不超过 3GB</div>
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式，文件不超过 1GB</div>
     <div id="extractSizeWarn" style="display:none; color:#e74c3c; font-size:0.85em; margin-top:4px;"></div>
     <button id="extractSubmitBtn">提取音频</button>
   </div>
@@ -507,20 +507,23 @@
       return data;
     }
 
-    // 视频文件大小校验（WASM 内存上限 3GB）
-    const MAX_VIDEO_BYTES = 3 * 1024 * 1024 * 1024;
+    // 视频文件大小校验（ffmpeg.wasm 需将整个文件加载到内存，过大易 OOM）
+    const MAX_VIDEO_BYTES = 1 * 1024 * 1024 * 1024;
     document.getElementById('extractVideoFile').addEventListener('change', (e) => {
       const file = e.target.files[0];
       const warn = document.getElementById('extractSizeWarn');
       const btn = document.getElementById('extractSubmitBtn');
+      const extractHint = document.querySelector('#panel-extract div');
       if (file && file.size > MAX_VIDEO_BYTES) {
-        const gb = (file.size / (1024 * 1024 * 1024)).toFixed(1);
-        warn.textContent = '文件过大（' + gb + ' GB），无法处理，请选择 3GB 以内的视频。';
+        const gb = (file.size / (1024 * 1024 * 1024)).toFixed(2);
+        warn.textContent = '文件过大（' + gb + ' GB），浏览器内存有限，无法处理超过 1GB 的视频。';
         warn.style.display = 'block';
         btn.disabled = true;
+        if (extractHint) extractHint.style.display = 'none';
       } else {
         warn.style.display = 'none';
         btn.disabled = false;
+        if (extractHint) extractHint.style.display = '';
       }
     });
 
@@ -550,7 +553,12 @@
         resultBox.value = '提取并下载完成：' + filename + '（' + audioMB + ' MB）';
       } catch (e) {
         progressContainer.style.display = 'none';
-        alert('音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly。');
+        const errMsg = e.message || String(e);
+        if (errMsg.includes('out of memory') || errMsg.includes('memory access') || errMsg.includes('Out of memory')) {
+          resultBox.value = '音频提取失败：视频文件过大，超出了浏览器内存限制。\n\n请尝试使用较小的视频文件（建议 1GB 以内）。';
+        } else {
+          resultBox.value = '音频提取失败: ' + errMsg + '\n\n请确认浏览器支持 WebAssembly 且文件未损坏。';
+        }
       }
     });
 
