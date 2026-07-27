@@ -206,15 +206,28 @@
   <h1>Whisper 音频转写</h1>
 
   <div class="tabs">
-    <button class="tab active" data-tab="upload">上传文件转写</button>
+    <button class="tab active" data-tab="extract">提取音频</button>
+    <button class="tab" data-tab="upload">上传文件转写</button>
     <button class="tab" data-tab="url">通过 URL 转写</button>
   </div>
 
-  <div class="tab-panel active" id="panel-upload">
+  <div class="tab-panel active" id="panel-extract">
+    <h2>视频提取音频</h2>
+    <label>视频文件:</label>
+    <input type="file" id="extractVideoFile" accept="video/*" required />
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式</div>
+    <div id="extractResult" style="display:none; margin-top:12px; padding:12px; background:#f0f9f0; border-radius:var(--border-radius);">
+      <span id="extractInfo"></span>
+      <button id="extractDownloadBtn" style="margin-left:12px; background-color:#27ae60;">下载音频</button>
+    </div>
+    <button id="extractSubmitBtn">提取音频</button>
+  </div>
+
+  <div class="tab-panel" id="panel-upload">
     <h2>上传文件转写</h2>
-    <label>音频 / 视频文件:</label>
-    <input type="file" id="audioFile" accept="audio/*,video/*" required />
-    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持音频和视频格式，视频文件将自动提取音频。超大文件请切换到「通过 URL 转写」</div>
+    <label>音频文件:</label>
+    <input type="file" id="audioFile" accept="audio/*" required />
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 WAV、MP3 等常见音频格式。超大文件请切换到「通过 URL 转写」</div>
     <button type="submit" id="uploadSubmitBtn">开始转写</button>
   </div>
 
@@ -376,38 +389,18 @@
       const file = fileInput.files[0];
       if (!file) return alert('Please select a file.');
 
-      showProgress();
-
-      let audioBuffer;
-      const isVideo = isVideoFile(file);
-
-      if (isVideo) {
-        progressText.textContent = '检测到视频文件，准备提取音频...';
-        uploadedFileName = file.name;
-        try {
-          audioBuffer = await extractAudioFromVideo(file);
-        } catch (e) {
-          progressContainer.style.display = 'none';
-          resultBox.value = '音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly，或尝试用本地工具先提取音频。';
-          return;
-        }
-        const audioMB = (audioBuffer.byteLength / (1024 * 1024)).toFixed(1);
-        if (audioBuffer.byteLength > MAX_UPLOAD_BYTES) {
-          progressContainer.style.display = 'none';
-          resultBox.value = '提取的音频文件过大（' + audioMB + ' MB），超出上传限制（95 MB）。\n\n请使用更短的视频文件。';
-          return;
-        }
-        progressText.textContent = '音频提取完成（' + audioMB + ' MB），开始处理...';
-      } else {
-        uploadedFileName = file.name;
-        if (file.size > MAX_UPLOAD_BYTES) {
-          const fileMB = (file.size / (1024 * 1024)).toFixed(1);
-          progressContainer.style.display = 'none';
-          resultBox.value = '音频文件过大（' + fileMB + ' MB），超出上传限制（95 MB）。\n\n请使用更小的文件或通过「通过 URL 转写」上传。';
-          return;
-        }
-        audioBuffer = await file.arrayBuffer();
+      uploadedFileName = file.name;
+      if (file.size > MAX_UPLOAD_BYTES) {
+        const fileMB = (file.size / (1024 * 1024)).toFixed(1);
+        progressContainer.style.display = 'none';
+        resultBox.value = '音频文件过大（' + fileMB + ' MB），超出上传限制（95 MB）。\n\n请使用更小的文件或通过「通过 URL 转写」上传。';
+        return;
       }
+
+      showProgress();
+      progressText.textContent = '正在处理音频...';
+
+      const audioBuffer = await file.arrayBuffer();
 
       const task = document.getElementById('task').value;
       const language = document.getElementById('language').value;
@@ -499,6 +492,76 @@
         resultBox.value = 'Error: ' + error.message;
         downloadSrtBtn.disabled = true;
       }
+    });
+
+    // =================== 视频提取音频下载 ===================
+
+    let extractedAudioData = null;
+    let extractedFileName = '';
+
+    /** 从视频中提取音频用于下载（44.1kHz 立体声 WAV） */
+    async function extractAudioForDownload(file) {
+      const ff = await getFFmpeg();
+      progressBar.style.width = '90%';
+      progressText.textContent = '正在从视频中提取音频...';
+
+      const inputExt = file.name.split('.').pop().toLowerCase();
+      const inputName = 'input.' + inputExt;
+      const outputName = 'output.wav';
+
+      await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+
+      await ff.exec([
+        '-i', inputName,
+        '-vn',                   // 丢弃视频轨道
+        '-acodec', 'pcm_s16le',  // 16-bit PCM
+        '-ar', '16000',          // 16kHz 采样率
+        '-ac', '1',              // 单声道
+        outputName
+      ]);
+
+      const data = await ff.readFile(outputName);
+      await ff.deleteFile(inputName);
+      await ff.deleteFile(outputName);
+
+      return data;
+    }
+
+    document.getElementById('extractSubmitBtn').addEventListener('click', async () => {
+      const fileInput = document.getElementById('extractVideoFile');
+      const file = fileInput.files[0];
+      if (!file) return alert('请选择一个视频文件。');
+
+      const resultDiv = document.getElementById('extractResult');
+      resultDiv.style.display = 'none';
+
+      showProgress();
+      progressText.textContent = '检测到视频文件，准备提取音频...';
+
+      try {
+        const audioData = await extractAudioForDownload(file);
+        const audioMB = (audioData.byteLength / (1024 * 1024)).toFixed(1);
+        extractedAudioData = audioData;
+        extractedFileName = file.name.replace(/\.[^/.]+$/, '') + '.wav';
+
+        hideProgress();
+        document.getElementById('extractInfo').textContent = '提取完成：' + extractedFileName + '（' + audioMB + ' MB）';
+        resultDiv.style.display = 'block';
+      } catch (e) {
+        progressContainer.style.display = 'none';
+        alert('音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly。');
+      }
+    });
+
+    document.getElementById('extractDownloadBtn').addEventListener('click', () => {
+      if (!extractedAudioData) return;
+      const blob = new Blob([extractedAudioData], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = extractedFileName;
+      a.click();
+      URL.revokeObjectURL(url);
     });
 
     function getBaseFileName() {
