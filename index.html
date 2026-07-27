@@ -226,11 +226,6 @@
     <label>视频文件:</label>
     <input type="file" id="extractVideoFile" accept="video/*" required />
     <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式</div>
-    <div id="extractResult"
-      style="display:none; margin-top:12px; padding:12px; background:#f0f9f0; border-radius:var(--border-radius);">
-      <span id="extractInfo"></span>
-      <button id="extractDownloadBtn" style="margin-left:12px; background-color:#27ae60;">下载音频</button>
-    </div>
     <button id="extractSubmitBtn">提取音频</button>
   </div>
 
@@ -283,13 +278,6 @@
 
     let ffmpeg = null;
 
-    const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv', 'wmv', 'm4v', 'ogv', '3gp'];
-
-    function isVideoFile(file) {
-      const ext = file.name.split('.').pop().toLowerCase();
-      return VIDEO_EXTS.includes(ext);
-    }
-
     async function getFFmpeg() {
       if (ffmpeg) return ffmpeg;
       ffmpeg = new FFmpegWASM.FFmpeg();
@@ -302,38 +290,6 @@
         wasmURL: '/ffmpeg-core/ffmpeg-core.wasm',
       });
       return ffmpeg;
-    }
-
-    /** 从视频文件中提取音频，返回 WAV 格式的 ArrayBuffer */
-    async function extractAudioFromVideo(file) {
-      const ff = await getFFmpeg();
-      progressBar.style.width = '90%';
-      progressText.textContent = '正在从视频中提取音频...';
-      progressBar.style.width = '95%';
-
-      const inputExt = file.name.split('.').pop().toLowerCase();
-      const inputName = 'input.' + inputExt;
-      const outputName = 'output.wav';
-
-      await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
-
-      await ff.exec([
-        '-i', inputName,
-        '-vn',                  // 丢弃视频轨道
-        '-ac', '1',             // 单声道（Whisper 不需要立体声）
-        '-ar', '16000',         // 16kHz 采样率（Whisper 官方推荐）
-        '-sample_fmt', 's16',   // 16-bit PCM
-        '-f', 'wav',
-        outputName
-      ]);
-
-      const data = (await ff.readFile(outputName)).buffer;
-
-      // 清理虚拟文件系统
-      await ff.deleteFile(inputName);
-      await ff.deleteFile(outputName);
-
-      return data;
     }
 
     // Tab 切换
@@ -386,6 +342,19 @@
 
     // =================== 音频预处理（ffmpeg 切分） ===================
 
+    /** 流式读取文件并分块写入 ffmpeg 虚拟文件系统，避免整文件加载到内存 */
+    async function streamFileToFFmpeg(ff, file, fsName) {
+      const CHUNK = 8 * 1024 * 1024; // 每次读 8MB
+      const total = file.size;
+      let offset = 0;
+      while (offset < total) {
+        const end = Math.min(offset + CHUNK, total);
+        const buf = await file.slice(offset, end).arrayBuffer();
+        await ff.writeFile(fsName, new Uint8Array(buf), { offset });
+        offset = end;
+      }
+    }
+
     /** 将音频文件转为 16kHz 单声道 WAV 并按 1 分钟切分，返回 ArrayBuffer 数组 */
     async function prepareAudioForTranscription(file) {
       const ff = await getFFmpeg();
@@ -393,7 +362,7 @@
       const inputExt = file.name.split('.').pop().toLowerCase();
       const inputName = 'input_trans.' + inputExt;
 
-      await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+      await streamFileToFFmpeg(ff, file, inputName);
 
       await ff.exec([
         '-i', inputName,
@@ -502,9 +471,6 @@
 
     // =================== 视频提取音频下载 ===================
 
-    let extractedAudioData = null;
-    let extractedFileName = '';
-
     /** 从视频中提取音频用于下载（16kHz 单声道 WAV） */
     async function extractAudioForDownload(file) {
       const ff = await getFFmpeg();
@@ -515,14 +481,14 @@
       const inputName = 'input.' + inputExt;
       const outputName = 'output.wav';
 
-      await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+      await streamFileToFFmpeg(ff, file, inputName);
 
       await ff.exec([
         '-i', inputName,
-        '-vn',                   // 丢弃视频轨道
-        '-acodec', 'pcm_s16le',  // 16-bit PCM
-        '-ar', '16000',          // 16kHz 采样率
-        '-ac', '1',              // 单声道
+        '-vn',
+        '-acodec', 'pcm_s16le',
+        '-ar', '16000',
+        '-ac', '1',
         outputName
       ]);
 
@@ -538,36 +504,29 @@
       const file = fileInput.files[0];
       if (!file) return alert('请选择一个视频文件。');
 
-      const resultDiv = document.getElementById('extractResult');
-      resultDiv.style.display = 'none';
-
       showProgress();
       progressText.textContent = '检测到视频文件，准备提取音频...';
 
       try {
         const audioData = await extractAudioForDownload(file);
         const audioMB = (audioData.byteLength / (1024 * 1024)).toFixed(1);
-        extractedAudioData = audioData;
-        extractedFileName = file.name.replace(/\.[^/.]+$/, '') + '.wav';
+        const filename = file.name.replace(/\.[^/.]+$/, '') + '.wav';
+
+        // 直接触发下载，不在内存中保留数据
+        const blob = new Blob([audioData], { type: 'audio/wav' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
 
         hideProgress();
-        document.getElementById('extractInfo').textContent = '提取完成：' + extractedFileName + '（' + audioMB + ' MB）';
-        resultDiv.style.display = 'block';
+        resultBox.value = '提取并下载完成：' + filename + '（' + audioMB + ' MB）';
       } catch (e) {
         progressContainer.style.display = 'none';
         alert('音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly。');
       }
-    });
-
-    document.getElementById('extractDownloadBtn').addEventListener('click', () => {
-      if (!extractedAudioData) return;
-      const blob = new Blob([extractedAudioData], { type: 'audio/wav' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = extractedFileName;
-      a.click();
-      URL.revokeObjectURL(url);
     });
 
     function getBaseFileName() {
