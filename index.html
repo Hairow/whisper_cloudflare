@@ -225,7 +225,8 @@
     <h2>视频提取音频</h2>
     <label>视频文件:</label>
     <input type="file" id="extractVideoFile" accept="video/*" required />
-    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式</div>
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式，文件不超过 2GB</div>
+    <div id="extractSizeWarn" style="display:none; color:#e74c3c; font-size:0.85em; margin-top:4px;"></div>
     <button id="extractSubmitBtn">提取音频</button>
   </div>
 
@@ -498,6 +499,23 @@
 
       return data;
     }
+
+    // 视频文件大小校验（WASM 内存上限 2GB）
+    const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
+    document.getElementById('extractVideoFile').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      const warn = document.getElementById('extractSizeWarn');
+      const btn = document.getElementById('extractSubmitBtn');
+      if (file && file.size > MAX_VIDEO_BYTES) {
+        const gb = (file.size / (1024 * 1024 * 1024)).toFixed(1);
+        warn.textContent = '文件过大（' + gb + ' GB），无法处理，请选择 2GB 以内的视频。';
+        warn.style.display = 'block';
+        btn.disabled = true;
+      } else {
+        warn.style.display = 'none';
+        btn.disabled = false;
+      }
+    });
 
     document.getElementById('extractSubmitBtn').addEventListener('click', async () => {
       const fileInput = document.getElementById('extractVideoFile');
