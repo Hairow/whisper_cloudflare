@@ -7,11 +7,7 @@ export default {
     // GET / - 返回前端页面
     if (request.method === 'GET' && url.pathname === '/') {
       return new Response(HTML_PAGE, {
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cross-Origin-Opener-Policy': 'same-origin',
-          'Cross-Origin-Embedder-Policy': 'require-corp',
-        }
+        headers: { 'Content-Type': 'text/html; charset=utf-8' }
       });
     }
 

@@ -3,6 +3,7 @@
   "main": "index.js",
   "compatibility_date": "2025-07-26",
   "ai": {
-    "binding": "AI"
+    "binding": "AI",
+    "remote": true
   }
 }

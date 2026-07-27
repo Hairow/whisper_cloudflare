@@ -417,7 +417,12 @@
         segments = await prepareAudioForTranscription(file);
       } catch (e) {
         progressContainer.style.display = 'none';
-        resultBox.value = '音频预处理失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly。';
+        console.error('音频预处理失败:', e);
+        console.error('ffmpeg 日志:', ffLogs.join('\n'));
+        const logTail = ffLogs.slice(-8).join('\n');
+        resultBox.value = '音频预处理失败: ' + (e.message || String(e) || '未知错误') +
+          '\n\n--- ffmpeg 最近日志 ---\n' + (logTail || '(无日志)') +
+          '\n\n请打开开发者控制台查看详细错误。';
         return;
       }
 
@@ -479,9 +484,17 @@
 
     // =================== 视频提取音频下载 ===================
 
+    // 收集 ffmpeg 日志用于调试
+    let ffLogs = [];
+    function registerFFLog(ff) {
+      ffLogs = [];
+      ff.on('log', ({ message }) => { ffLogs.push(message); });
+    }
+
     /** 从视频中提取音频用于下载（16kHz 单声道 WAV） */
     async function extractAudioForDownload(file) {
       const ff = await getFFmpeg();
+      registerFFLog(ff);
       progressBar.style.width = '90%';
       progressText.textContent = '正在从视频中提取音频...';
 
@@ -553,11 +566,18 @@
         resultBox.value = '提取并下载完成：' + filename + '（' + audioMB + ' MB）';
       } catch (e) {
         progressContainer.style.display = 'none';
+        // 完整 error 对象输出到控制台
+        console.error('提取音频失败:', e);
+        console.error('ffmpeg 日志:', ffLogs.join('\n'));
+
         const errMsg = e.message || String(e);
-        if (errMsg.includes('out of memory') || errMsg.includes('memory access') || errMsg.includes('Out of memory')) {
-          resultBox.value = '音频提取失败：视频文件过大，超出了浏览器内存限制。\n\n请尝试使用较小的视频文件（建议 1GB 以内）。';
+        const logTail = ffLogs.slice(-8).join('\n');
+        if (errMsg.includes('out of memory') || errMsg.includes('memory access') || (logTail && logTail.includes('out of memory'))) {
+          resultBox.value = '音频提取失败：视频文件过大，超出了浏览器内存限制。\n\n请尝试使用较小的视频文件（建议 500MB 以内）。';
         } else {
-          resultBox.value = '音频提取失败: ' + errMsg + '\n\n请确认浏览器支持 WebAssembly 且文件未损坏。';
+          resultBox.value = '音频提取失败: ' + (errMsg || '未知错误') +
+            '\n\n--- ffmpeg 最近日志 ---\n' + (logTail || '(无日志)') +
+            '\n\n请确认浏览器支持 WebAssembly，也可打开开发者控制台查看详细错误。';
         }
       }
     });
