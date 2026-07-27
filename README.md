@@ -1,40 +1,55 @@
 # Whisper on Cloudflare AI
 
-一个基于 Whisper 模型的在线音频转写工具，部署在 Cloudflare 上。该工具可以将音频文件转换为文字，并支持生成 SRT 格式的字幕文件。
+基于 Cloudflare Workers AI（Whisper large-v3-turbo）的在线音频/视频转写工具，支持在浏览器中直接提取视频音频并生成字幕。
 
-实例：[https://whisper.ohen5pbf93.workers.dev/](https://whisper.ohen5pbf93.workers.dev/)
+## 功能
 
-![index](https://github.com/user-attachments/assets/8818c6e9-8e4e-4cec-802e-16513de9f91e)
+- **音频转写**：上传音频文件，直接转写为文字
+- **视频提取音频**：用浏览器端 ffmpeg.wasm 从视频中提取音频，然后转写
+- **SRT 字幕**：自动生成带时间戳的 SRT 字幕文件并下载
+- **VAD 过滤**：自动跳过静音段，减少无效消耗
+- **大文件支持**：启用 Cross-Origin Isolation，支持 1GB 以内的视频文件
+- **多语言**：支持转写（transcribe）和翻译（translate）两种模式
 
-# 速度
-使用一段时长为41分钟39秒的音频测试，用时1.9分钟
+## 免费额度
 
-> 由于worker的资源限制，在使用时可能出现错误，重试即可
+Cloudflare Workers AI 每日提供 10,000 neurons 免费额度。Whisper large-v3-turbo 消耗约 **47 neurons/分钟**，每天可转写约 **3.5 小时**音频。
 
-![example](https://github.com/user-attachments/assets/dac563ff-091f-479e-a750-d1f4ab1feafe)
+## 使用方式
 
-## API 接口说明
+直接访问部署后的 Worker URL，上传音频或视频文件即可。
 
-### 1. `POST /raw`
+### 转写配置
 
-返回未经处理的原始转写数据（JSON 格式）。
+| 参数 | 说明 |
+| --- | --- |
+| Task | `transcribe`（转写原文）或 `translate`（翻译为英文） |
+| Language | 可选，指定源语言代码（zh、en、ja 等） |
+| Initial Prompt | 初始提示词，引导模型理解语境 |
+| Prefix | 前缀文本，增强上下文理解 |
+| VAD Filter | 启用语音活动检测，跳过静音段 |
 
-### 2. `POST /srt`
+## 部署
 
-返回处理后的字幕数据（SRT 格式）。
+```bash
+npm install
+npx wrangler deploy
+```
 
-#### 请求说明
+## 技术栈
 
-* **请求方法**：`POST`
-* **内容类型（Content-Type）**：`application/octet-stream`
-* **请求体**：音频文件的二进制数据
+- **后端**：Cloudflare Workers
+- **AI**：Cloudflare Workers AI（`@cf/openai/whisper-large-v3-turbo`）
+- **视频处理**：ffmpeg.wasm（浏览器端 WebAssembly）
+- **内存优化**：Cross-Origin Isolation（COOP + COEP），启用 SharedArrayBuffer 解锁 4GB WASM 堆
 
-#### 查询参数
+## API 接口
 
-| 参数名              | 类型      | 说明                                         |
-| ---------------- | ------- | ------------------------------------------ |
-| `task`           | string  | 任务类型，可选值：`transcribe`（转写）或 `translate`（翻译） |
-| `language`       | string  | 目标语言代码，例如：`en`、`zh`、`ja` 等                 |
-| `vad_filter`     | boolean | 是否启用 VAD（语音活动检测）过滤，`true` 或 `false`        |
-| `initial_prompt` | string  | 初始提示词，用于引导模型理解语境（可选）                       |
-| `prefix`         | string  | 前缀文本，用于增强上下文理解（可选）                         |
+### `POST /raw`
+
+上传音频数据并获取转写结果。
+
+- **Content-Type**：`application/octet-stream`
+- **Body**：WAV 音频二进制数据（16kHz 单声道 16-bit PCM）
+- **Query 参数**：见上方转写配置表
+- **返回**：`{ text, segments }` JSON
