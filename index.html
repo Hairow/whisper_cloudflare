@@ -211,7 +211,7 @@
       color: #888;
     }
   </style>
-  <script src="/ffmpeg/ffmpeg.js"></script>
+
 </head>
 
 <body>
@@ -267,6 +267,8 @@
   <textarea id="result" readonly></textarea>
   <button id="downloadSrtBtn" disabled>下载 SRT</button>
 
+  <script src="/ffmpeg/ffmpeg.js"></script>
+
   <script>
     const resultBox = document.getElementById('result');
     const downloadSrtBtn = document.getElementById('downloadSrtBtn');
@@ -287,10 +289,11 @@
         progressBar.style.width = Math.round(progress * 100) + '%';
         progressText.textContent = '处理中... ' + Math.round(progress * 100) + '%';
       });
+
       await ffmpeg.load({
-        coreURL: '/ffmpeg-core/ffmpeg-core.js',
-        wasmURL: '/ffmpeg-core/ffmpeg-core.wasm',
+        coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
       });
+
       return ffmpeg;
     }
 

@@ -3,7 +3,7 @@ import HTML_PAGE from './index.html';
 // COOP/COEP 头，启用 SharedArrayBuffer 支持大内存 WASM
 const ISOLATION_HEADERS = {
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cross-Origin-Embedder-Policy': 'credentialless',
 };
 
 export default {
@@ -22,13 +22,6 @@ export default {
       return handleUpload(request, url, env);
     }
 
-    // 代理 ffmpeg CDN 文件，附加 COOP/COEP 头以满足 Worker 隔离要求
-    if (url.pathname.startsWith('/ffmpeg/')) {
-      return proxyWithIsolation('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/' + url.pathname.slice(8));
-    }
-    if (url.pathname.startsWith('/ffmpeg-core/')) {
-      return proxyWithIsolation('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/' + url.pathname.slice(13));
-    }
 
     return new Response('Not Found', { status: 404 });
   }
