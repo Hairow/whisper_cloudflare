@@ -2,11 +2,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // GET / - 跳转到 index.html（由 Assets 静态托管返回）
-    if (request.method === 'GET' && url.pathname === '/') {
-      return Response.redirect(url.origin + '/index.html', 302);
-    }
-
     // POST /raw - 上传音频并转写
     if (request.method === 'POST' && url.pathname === '/raw') {
       return handleUpload(request, url, env);
