@@ -83,6 +83,36 @@ ffmpeg.wasm 由主线程 + Web Worker 双线程运行，涉及 4 个文件：
 - `ffmpeg-core.js` / `ffmpeg-core.wasm` 直接从 unpkg CDN 加载
 - 未启用 COEP，WASM 堆上限 2GB（非 4GB），实际建议视频不超过 500MB 以保证稳定性
 
+### 通信模型
+
+ffmpeg.js 在主线程只暴露轻量 API 壳，所有 WASM 运算在 Worker 线程完成，通过 `postMessage` 通信：
+
+```
+主线程                              Worker 线程
+─────────────────────────────────────────────────
+ff.exec(['-i', 'input.mp4',
+         '-vn', '-c:a', 'copy',
+         'output.mp3'])
+  │
+  └── postMessage(args)  ──→     接收消息
+                                    WASM 解码 + 编码
+                                    memcpy 写入 MEMFS
+                                  运算结束
+                                ← postMessage(result)
+  await resolve()
+  │
+  ├── ff.readFile('output.mp3')
+  │     └── postMessage  ──→     WASM 读 MEMFS
+  │                           ←   Uint8Array
+  │
+  └── ff.deleteFile(...)
+        └── postMessage  ──→     WASM 清理 MEMFS
+```
+
+- `importScripts()` / `WebAssembly.instantiate()` 只在 Worker 启动时执行一次，之后 WASM 处于待命状态
+- 每次 `ff.exec()` 期间 Worker 线程被 WASM 独占，结束后立即交还控制权
+- 主线程始终保持响应，不会因 ffmpeg 运算而卡顿 UI
+
 ## API 接口
 
 ### `POST /raw`
