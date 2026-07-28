@@ -486,20 +486,38 @@
       ff.on('log', ({ message }) => { ffLogs.push(message); });
     }
 
-    /** 从视频中提取音频用于下载（小文件一次性，大文件分段提取，编码为 MP3） */
-    async function extractAudioForDownload(file) {
+    /** 销毁当前 ffmpeg 实例，彻底释放 WASM 堆内存 */
+    async function resetFFmpeg() {
+      if (ffmpeg) {
+        ffmpeg.off('log');           // 清理所有 log 监听器
+        // terminate/destroy 会释放 WASM 堆，避免多轮处理导致 OOB
+        if (typeof ffmpeg.terminate === 'function') {
+          ffmpeg.terminate();
+        }
+        ffmpeg = null;
+      }
+    }
+
+    /** 获取一个已加载、已挂载 WORKERFS 的 ffmpeg 实例 + input 对象 */
+    async function getFFmpegWithInput(file) {
+      await resetFFmpeg();          // 先清理旧实例
       const ff = await getFFmpeg();
       registerFFLog(ff);
+      const input = await mountInput(ff, file);
+      return { ff, input };
+    }
 
+    /** 从视频中提取音频用于下载（小文件一次性，大文件分段提取，编码为 MP3） */
+    async function extractAudioForDownload(file) {
       const SEGMENT_SECONDS = 60;
-      const ONE_SHOT_BYTES = 200 * 1024 * 1024; // 小于 200MB 直接一次性处理
+      const BATCH_SIZE = 25;       // 每批处理 25 个片段后重建 ffmpeg，避免 WASM 堆 OOM
+      const ONE_SHOT_BYTES = 200 * 1024 * 1024;
       const formatMB = (b) => (b / (1024 * 1024)).toFixed(0);
 
-      const input = await mountInput(ff, file);
-
-      try {
-        // 小文件快速通道：跳过时长探测，直接一次性提取
-        if (file.size <= ONE_SHOT_BYTES) {
+      // 小文件快速通道
+      if (file.size <= ONE_SHOT_BYTES) {
+        const { ff, input } = await getFFmpegWithInput(file);
+        try {
           progressBar.style.width = '90%';
           progressText.textContent = '正在从视频中提取音频，编码为 MP3...';
 
@@ -514,29 +532,37 @@
           const data = await ff.readFile('audio.mp3');
           await ff.deleteFile('audio.mp3');
           return { data: new Uint8Array(data), ext: 'mp3', mime: 'audio/mpeg' };
+        } finally {
+          await input.cleanup();
         }
+      }
 
-        // 1. 探测视频时长（从 ffmpeg 日志中解析 Duration）
-        progressText.textContent = '正在探测视频时长...';
-        await ff.exec(['-i', input.path]).catch(() => { });
+      // 1. 首次初始化 ffmpeg 并探测视频时长
+      const { ff: firstFF, input: firstInput } = await getFFmpegWithInput(file);
+      let firstInputCleanup = firstInput.cleanup;
 
-        let duration = 0;
-        for (const msg of ffLogs) {
-          const m = msg.match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
-          if (m) {
-            duration = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]) + parseInt(m[4]) / 100;
-            break;
-          }
+      progressText.textContent = '正在探测视频时长...';
+      await firstFF.exec(['-i', firstInput.path]).catch(() => { });
+
+      let duration = 0;
+      for (const msg of ffLogs) {
+        const m = msg.match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+        if (m) {
+          duration = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]) + parseInt(m[4]) / 100;
+          break;
         }
-        registerFFLog(ff);
+      }
+      if (!duration || duration <= 0) throw new Error('无法获取视频时长');
 
-        if (!duration || duration <= 0) throw new Error('无法获取视频时长');
+      // 2. 分批提取，每 BATCH_SIZE 个片段重建 ffmpeg 释放 WASM 堆
+      const totalSegments = Math.ceil(duration / SEGMENT_SECONDS);
+      const chunks = [];
 
-        // 2. 分段提取
-        const totalSegments = Math.ceil(duration / SEGMENT_SECONDS);
-        const chunks = [];
-
-        for (let i = 0; i < totalSegments; i++) {
+      // 通用：处理一批片段（需要参数化的 ff + input + cleanup）
+      async function processBatch(batchIdx, ff, input, cleanup) {
+        const startSegIdx = batchIdx * BATCH_SIZE;
+        const endSegIdx = Math.min(startSegIdx + BATCH_SIZE, totalSegments);
+        for (let i = startSegIdx; i < endSegIdx; i++) {
           const start = i * SEGMENT_SECONDS;
           const chunkName = 'chunk_' + i + '.mp3';
 
@@ -557,19 +583,27 @@
           chunks.push(new Uint8Array(data));
           await ff.deleteFile(chunkName);
         }
-
-        // 3. 合并 MP3 片段
-        const totalLen = chunks.reduce((s, c) => s + c.length, 0);
-        const merged = new Uint8Array(totalLen);
-
-        let offset = 0;
-        for (const c of chunks) { merged.set(c, offset); offset += c.length; }
-
-        progressText.textContent = '音频提取完成（' + formatMB(merged.byteLength) + ' MB）';
-        return { data: merged, ext: 'mp3', mime: 'audio/mpeg' };
-      } finally {
-        await input.cleanup();
+        await cleanup(); // 释放当前实例的资源
       }
+
+      // 第一批：复用已经初始化的 ffmpeg 实例
+      await processBatch(0, firstFF, firstInput, firstInputCleanup);
+
+      // 后续批次：每批重建 ffmpeg 实例
+      const totalBatches = Math.ceil(totalSegments / BATCH_SIZE);
+      for (let b = 1; b < totalBatches; b++) {
+        const { ff: batchFF, input: batchInput } = await getFFmpegWithInput(file);
+        await processBatch(b, batchFF, batchInput, batchInput.cleanup);
+      }
+
+      // 3. 合并 MP3 片段
+      const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+      const merged = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+
+      progressText.textContent = '音频提取完成（' + formatMB(merged.byteLength) + ' MB）';
+      return { data: merged, ext: 'mp3', mime: 'audio/mpeg' };
     }
 
     // 视频文件大小校验（ffmpeg.wasm 需将整个文件加载到内存，过大易 OOM）
