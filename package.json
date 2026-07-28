@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "postinstall": "mkdir -p public/ffmpeg-umd && cp node_modules/@ffmpeg/ffmpeg/dist/umd/*.js public/ffmpeg-umd/",
+    "deploy": "npm run postinstall && wrangler deploy",
+    "dev": "npm run postinstall && wrangler dev"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15"
   }
 }

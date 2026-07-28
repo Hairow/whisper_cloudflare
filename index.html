@@ -211,7 +211,6 @@
       color: #888;
     }
   </style>
-
 </head>
 
 <body>
@@ -267,11 +266,9 @@
   <textarea id="result" readonly></textarea>
   <button id="downloadSrtBtn" disabled>下载 SRT</button>
 
-  <!-- As @ffmpeg/ffmpeg spawns a web worker, you cannot import @ffmpeg/ffmpeg from CDN like jsdelivr. It is recommended to download it and host it on your server most of the time. -->
-  <!-- 通过woker 代理访问cdn -->
-  <script src="/ffmpeg/ffmpeg.js"></script>
-
+  <script src="/ffmpeg-umd/ffmpeg.js"></script>
   <script>
+
     const resultBox = document.getElementById('result');
     const downloadSrtBtn = document.getElementById('downloadSrtBtn');
     const progressContainer = document.getElementById('progressContainer');
@@ -292,7 +289,7 @@
         progressText.textContent = '处理中... ' + Math.round(progress * 100) + '%';
       });
 
-      // 内核文件可以通过cdn引入，防止 cf worker 文件大小限制
+      // @ffmpeg/ffmpeg JS 从本地 public/ 加载，core 内核从 CDN 加载
       await ffmpeg.load({
         coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
       });
