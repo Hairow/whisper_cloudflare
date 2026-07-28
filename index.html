@@ -510,7 +510,7 @@
     /** 从视频中提取音频用于下载（小文件一次性，大文件分段提取，编码为 MP3） */
     async function extractAudioForDownload(file) {
       const SEGMENT_SECONDS = 60;
-      const BATCH_SIZE = 25;       // 每批处理 25 个片段后重建 ffmpeg，避免 WASM 堆 OOM
+      const BATCH_SIZE = 40;       // 每批处理 40 个片段后重建 ffmpeg，避免 WASM 堆 OOM
       const ONE_SHOT_BYTES = 200 * 1024 * 1024;
       const formatMB = (b) => (b / (1024 * 1024)).toFixed(0);
 
@@ -637,11 +637,11 @@
 
       try {
         const { data, ext, mime } = await extractAudioForDownload(file);
-        console.log('after extractAudioForDownload')
+
         const audioMB = (data.byteLength / (1024 * 1024)).toFixed(1);
         const filename = file.name.replace(/\.[^/.]+$/, '') + '.' + ext;
 
-        // 直接触发下载，不在内存中保留数据
+        // 直接触发下载
         const blob = new Blob([data], { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
