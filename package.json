@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "postinstall": "node scripts/copy-ffmpeg.js",
-    "deploy": "npm run postinstall && wrangler deploy",
-    "dev": "npm run postinstall && wrangler dev"
+    "postinstall": "npm run copy-ffmpeg",
+    "copy-ffmpeg": "node scripts/copy-ffmpeg.js",
+    "deploy": "npm run copy-ffmpeg && wrangler deploy",
+    "dev": "npm run copy-ffmpeg && wrangler dev"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
