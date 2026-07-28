@@ -268,6 +268,7 @@
   <button id="downloadSrtBtn" disabled>下载 SRT</button>
 
   <!-- As @ffmpeg/ffmpeg spawns a web worker, you cannot import @ffmpeg/ffmpeg from CDN like jsdelivr. It is recommended to download it and host it on your server most of the time. -->
+  <!-- 通过woker 代理访问cdn -->
   <script src="/ffmpeg/ffmpeg.js"></script>
 
   <script>
@@ -291,6 +292,7 @@
         progressText.textContent = '处理中... ' + Math.round(progress * 100) + '%';
       });
 
+      // 内核文件可以通过cdn引入，防止 cf worker 文件大小限制
       await ffmpeg.load({
         coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
       });
