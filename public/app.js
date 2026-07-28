@@ -93,8 +93,8 @@ async function prepareAudioForTranscription(file) {
   registerFFLog(ff);
   const input = await mountInput(ff, file);
 
-  // 探测时长 通过log日志
-  await ff.exec(['-i', input.path]).catch(() => { });
+  // 探测时长 
+  await ff.exec(['-i', input.path]).catch(() => { });//执行ffmpeg命令，捕获错误 附带元信息，从元信息中获取时长
   let duration = 0;
   for (const msg of ffLogs) {
     const m = msg.match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
@@ -232,6 +232,7 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
 let ffLogs = [];
 function registerFFLog(ff) {
   ffLogs = [];
+  ff.off('log'); // 清理上一次的监听器，避免重复注册
   ff.on('log', ({ message }) => { ffLogs.push(message); });
 }
 
