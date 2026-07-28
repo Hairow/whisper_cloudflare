@@ -93,7 +93,7 @@ async function prepareAudioForTranscription(file) {
   registerFFLog(ff);
   const input = await mountInput(ff, file);
 
-  // 探测时长
+  // 探测时长 通过log日志
   await ff.exec(['-i', input.path]).catch(() => { });
   let duration = 0;
   for (const msg of ffLogs) {
