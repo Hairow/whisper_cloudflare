@@ -626,14 +626,37 @@
       // 最后一批的清理
       await ctx.input.cleanup();
 
-      // 4. 合并 MP3 片段
-      const totalLen = chunks.reduce((s, c) => s + c.length, 0);
-      const merged = new Uint8Array(totalLen);
-      let offset = 0;
-      for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+      // 4. 用 ffmpeg concat demuxer 合并 MP3（字节拼接会丢失时长信息）
+      progressText.textContent = '正在合并音频片段...';
 
-      progressText.textContent = '音频提取完成（' + formatMB(merged.byteLength) + ' MB）';
-      return { data: merged, ext: 'mp3', mime: 'audio/mpeg' };
+      const mergeFF = new FFmpegWASM.FFmpeg();
+      await mergeFF.load({
+        coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+        wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+      });
+
+      try {
+        // 将所有 chunk 写入新实例的 MEMFS
+        let list = '';
+        for (let i = 0; i < chunks.length; i++) {
+          const name = 'c' + i + '.mp3';
+          await mergeFF.writeFile(name, chunks[i]);
+          list += "file '" + name + "'\n";
+        }
+        await mergeFF.writeFile('concat.txt', list);
+
+        // concat demuxer + stream copy（不重新编码，快且正确写入时长元数据）
+        await mergeFF.exec(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', 'merged.mp3']);
+
+        const mergedData = await mergeFF.readFile('merged.mp3');
+        const merged = new Uint8Array(mergedData);
+        chunks.length = 0; // 释放中间 chunks 占用的 JS 内存
+
+        progressText.textContent = '音频提取完成（' + formatMB(merged.byteLength) + ' MB）';
+        return { data: merged, ext: 'mp3', mime: 'audio/mpeg' };
+      } finally {
+        try { mergeFF.terminate(); } catch (_) { }
+      }
     }
 
     // 视频文件大小校验（ffmpeg.wasm 需将整个文件加载到内存，过大易 OOM）
