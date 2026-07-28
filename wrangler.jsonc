@@ -1,4 +1,7 @@
 {
+  // Cloudflare Pages 项目配置
+  // 参考文档: https://developers.cloudflare.com/workers/wrangler/configuration/
+  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "whisper-cloudflare",
   "main": "index.js",
   "compatibility_date": "2025-07-26",
