@@ -94,7 +94,7 @@ async function prepareAudioForTranscription(file) {
   const input = await mountInput(ff, file);
 
   // 探测时长
-  await ff.exec(['-i', input.path]).catch(() => {});
+  await ff.exec(['-i', input.path]).catch(() => { });
   let duration = 0;
   for (const msg of ffLogs) {
     const m = msg.match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
@@ -123,7 +123,7 @@ async function prepareAudioForTranscription(file) {
       '-ac', '1',
       name
     ]);
-    const data = await ff.readFile(name);
+    const data = await ff.readFile(name);//返回类型Uint8Array 直接写入opfs
     await writeToOPFS(opfsDir, name, data);
     await ff.deleteFile(name);
   }
@@ -416,8 +416,8 @@ async function extractAudioForDownload(file) {
   const stream = new ReadableStream({
     async start(controller) {
       for (let i = 0; i < extractedCount; i++) {
-        const data = await readFromOPFS(opfsDir, 'chunk_' + i + '.mp3');
-        controller.enqueue(data);
+        const data = await readFromOPFS(opfsDir, 'chunk_' + i + '.mp3');//读出的数据Uint8Array
+        controller.enqueue(data);//创建可读流，期望Uint8Array的二进制数据，如果是arraybuffer 还要自动转换为Uint8Array
         // 读完一片立即从 OPFS 删除，释放磁盘空间
         await removeFromOPFS(opfsDir, 'chunk_' + i + '.mp3');
       }
