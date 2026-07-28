@@ -87,14 +87,15 @@
 
     textarea {
       width: 100%;
-      height: 240px;
+      height: 360px;
       margin-top: 10px;
       padding: 15px;
       border: 1px solid #ddd;
       border-radius: var(--border-radius);
       box-sizing: border-box;
-      font-family: 'Courier New', monospace;
-      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
       resize: vertical;
     }
 
@@ -210,7 +211,7 @@
       color: #888;
     }
   </style>
-  <script src="/ffmpeg/ffmpeg.js"></script>
+
 </head>
 
 <body>
@@ -225,7 +226,7 @@
     <h2>视频提取音频</h2>
     <label>视频文件:</label>
     <input type="file" id="extractVideoFile" accept="video/*" required />
-    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式，文件不超过 3GB</div>
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式，文件不超过 1GB</div>
     <div id="extractSizeWarn" style="display:none; color:#e74c3c; font-size:0.85em; margin-top:4px;"></div>
     <button id="extractSubmitBtn">提取音频</button>
   </div>
@@ -266,6 +267,8 @@
   <textarea id="result" readonly></textarea>
   <button id="downloadSrtBtn" disabled>下载 SRT</button>
 
+  <script src="/ffmpeg/ffmpeg.js"></script>
+
   <script>
     const resultBox = document.getElementById('result');
     const downloadSrtBtn = document.getElementById('downloadSrtBtn');
@@ -284,12 +287,13 @@
       ffmpeg = new FFmpegWASM.FFmpeg();
       ffmpeg.on('progress', ({ progress }) => {
         progressBar.style.width = Math.round(progress * 100) + '%';
-        progressText.textContent = '加载引擎中... ' + Math.round(progress * 100) + '%';
+        progressText.textContent = '处理中... ' + Math.round(progress * 100) + '%';
       });
+
       await ffmpeg.load({
-        coreURL: '/ffmpeg-core/ffmpeg-core.js',
-        wasmURL: '/ffmpeg-core/ffmpeg-core.wasm',
+        coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
       });
+
       return ffmpeg;
     }
 
@@ -331,7 +335,7 @@
     function showProgress() {
       progressContainer.style.display = 'block';
       progressBar.style.width = '0%';
-      progressText.textContent = '处理中... 请稍候';
+      progressText.textContent = '开始处理中... 请稍候';
       resultBox.value = '';
       downloadSrtBtn.disabled = true;
     }
@@ -343,34 +347,22 @@
 
     // =================== 音频预处理（ffmpeg 切分） ===================
 
-    /** 流式读取文件并分块写入 ffmpeg 虚拟文件系统，避免整文件加载到内存 */
-    async function streamFileToFFmpeg(ff, file, fsName) {
-      const CHUNK = 50 * 1024 * 1024; // 每次读 50MB
-      const total = file.size;
-      let offset = 0;
-      while (offset < total) {
-        const pct = Math.round((offset / total) * 100);
-        progressBar.style.width = pct + '%';
-        progressText.textContent = '正在加载文件... ' + (offset / (1024 * 1024)).toFixed(0) + ' / ' + (total / (1024 * 1024)).toFixed(0) + ' MB';
-
-        // 让浏览器渲染进度条，避免动画卡死
-        await new Promise(r => requestAnimationFrame(r));
-
-        const end = Math.min(offset + CHUNK, total);
-        const buf = await file.slice(offset, end).arrayBuffer();
-        await ff.writeFile(fsName, new Uint8Array(buf), { offset });
-        offset = end;
-      }
-    }
-
     /** 将音频文件转为 16kHz 单声道 WAV 并按 1 分钟切分，返回 ArrayBuffer 数组 */
     async function prepareAudioForTranscription(file) {
       const ff = await getFFmpeg();
+      registerFFLog(ff);
 
       const inputExt = file.name.split('.').pop().toLowerCase();
       const inputName = 'input_trans.' + inputExt;
 
-      await streamFileToFFmpeg(ff, file, inputName);
+      // 一次性写入，避免 offset 分块在大文件时截断
+      {
+        const buffer = await file.arrayBuffer();
+        await ff.writeFile(inputName, new Uint8Array(buffer));
+        // 建议浏览器尽早回收 ArrayBuffer
+        buffer.detach?.();
+        if (typeof gc === 'function') gc();
+      }
 
       await ff.exec([
         '-i', inputName,
@@ -417,7 +409,12 @@
         segments = await prepareAudioForTranscription(file);
       } catch (e) {
         progressContainer.style.display = 'none';
-        resultBox.value = '音频预处理失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly。';
+        console.error('音频预处理失败:', e);
+        console.error('ffmpeg 日志:', ffLogs.join('\n'));
+        const logTail = ffLogs.slice(-8).join('\n');
+        resultBox.value = '音频预处理失败: ' + (e.message || String(e) || '未知错误') +
+          '\n\n--- ffmpeg 最近日志 ---\n' + (logTail || '(无日志)') +
+          '\n\n请打开开发者控制台查看详细错误。';
         return;
       }
 
@@ -479,24 +476,42 @@
 
     // =================== 视频提取音频下载 ===================
 
-    /** 从视频中提取音频用于下载（16kHz 单声道 WAV） */
+    // 收集 ffmpeg 日志用于调试
+    let ffLogs = [];
+    function registerFFLog(ff) {
+      ffLogs = [];
+      ff.on('log', ({ message }) => { ffLogs.push(message); });
+    }
+
+    /** 从视频中提取音频用于下载（编码为 MP3） */
     async function extractAudioForDownload(file) {
       const ff = await getFFmpeg();
-      progressBar.style.width = '90%';
-      progressText.textContent = '正在从视频中提取音频...';
+      registerFFLog(ff);
+      progressBar.style.width = '50%';
+      progressText.textContent = '正在加载视频文件（' + (file.size / (1024 * 1024)).toFixed(0) + ' MB）...';
 
       const inputExt = file.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + inputExt;
-      const outputName = 'output.wav';
+      const outputName = 'audio.mp3';
 
-      await streamFileToFFmpeg(ff, file, inputName);
+      // 一次性加载整个文件写入 MEMFS，避免 offset 模式在大文件时截断
+      // 写入完成后 buffer 离开块作用域，GC 可立即回收
+      {
+        const buffer = await file.arrayBuffer();
+        await ff.writeFile(inputName, new Uint8Array(buffer));
+        // 建议浏览器尽早回收 ArrayBuffer
+        buffer.detach?.();
+        if (typeof gc === 'function') gc();
+      }
+
+      progressBar.style.width = '90%';
+      progressText.textContent = '正在从视频中提取音频，编码为 MP3...';
 
       await ff.exec([
         '-i', inputName,
         '-vn',
-        '-acodec', 'pcm_s16le',
-        '-ar', '16000',
-        '-ac', '1',
+        '-c:a', 'libmp3lame',
+        '-q:a', '2',
         outputName
       ]);
 
@@ -504,23 +519,30 @@
       await ff.deleteFile(inputName);
       await ff.deleteFile(outputName);
 
-      return data;
+      return {
+        data,
+        ext: 'mp3',
+        mime: 'audio/mpeg',
+      };
     }
 
-    // 视频文件大小校验（WASM 内存上限 3GB）
-    const MAX_VIDEO_BYTES = 3 * 1024 * 1024 * 1024;
+    // 视频文件大小校验（ffmpeg.wasm 需将整个文件加载到内存，过大易 OOM）
+    const MAX_VIDEO_BYTES = 1 * 1024 * 1024 * 1024;
     document.getElementById('extractVideoFile').addEventListener('change', (e) => {
       const file = e.target.files[0];
       const warn = document.getElementById('extractSizeWarn');
       const btn = document.getElementById('extractSubmitBtn');
+      const extractHint = document.querySelector('#panel-extract div');
       if (file && file.size > MAX_VIDEO_BYTES) {
-        const gb = (file.size / (1024 * 1024 * 1024)).toFixed(1);
-        warn.textContent = '文件过大（' + gb + ' GB），无法处理，请选择 3GB 以内的视频。';
+        const gb = (file.size / (1024 * 1024 * 1024)).toFixed(2);
+        warn.textContent = '文件过大（' + gb + ' GB），浏览器内存有限，无法处理超过 1GB 的视频。';
         warn.style.display = 'block';
         btn.disabled = true;
+        if (extractHint) extractHint.style.display = 'none';
       } else {
         warn.style.display = 'none';
         btn.disabled = false;
+        if (extractHint) extractHint.style.display = '';
       }
     });
 
@@ -533,13 +555,12 @@
       progressText.textContent = '检测到视频文件，准备提取音频...';
 
       try {
-        const audioData = await extractAudioForDownload(file);
-        console.log('after extractAudioForDownload')
-        const audioMB = (audioData.byteLength / (1024 * 1024)).toFixed(1);
-        const filename = file.name.replace(/\.[^/.]+$/, '') + '.wav';
+        const { data, ext, mime } = await extractAudioForDownload(file);
+        const audioMB = (data.byteLength / (1024 * 1024)).toFixed(1);
+        const filename = file.name.replace(/\.[^/.]+$/, '') + '.' + ext;
 
         // 直接触发下载，不在内存中保留数据
-        const blob = new Blob([audioData], { type: 'audio/wav' });
+        const blob = new Blob([data], { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -551,7 +572,19 @@
         resultBox.value = '提取并下载完成：' + filename + '（' + audioMB + ' MB）';
       } catch (e) {
         progressContainer.style.display = 'none';
-        alert('音频提取失败: ' + e.message + '\n\n请确认浏览器支持 WebAssembly。');
+        // 完整 error 对象输出到控制台
+        console.error('提取音频失败:', e);
+        console.error('ffmpeg 日志:', ffLogs.join('\n'));
+
+        const errMsg = e.message || String(e);
+        const logTail = ffLogs.slice(-8).join('\n');
+        if (errMsg.includes('out of memory') || errMsg.includes('memory access') || (logTail && logTail.includes('out of memory'))) {
+          resultBox.value = '音频提取失败：视频文件过大，超出了浏览器内存限制。\n\n请尝试使用较小的视频文件（建议 500MB 以内）。';
+        } else {
+          resultBox.value = '音频提取失败: ' + (errMsg || '未知错误') +
+            '\n\n--- ffmpeg 最近日志 ---\n' + (logTail || '(无日志)') +
+            '\n\n请确认浏览器支持 WebAssembly，也可打开开发者控制台查看详细错误。';
+        }
       }
     });
 
