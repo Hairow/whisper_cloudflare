@@ -83,42 +83,64 @@ async function mountInput(ff, file) {
   return { path: '/mnt/' + file.name, cleanup: async () => { await ff.unmount('/mnt'); await ff.deleteDir('/mnt'); } };
 }
 
-/** 将音频文件转为 16kHz 单声道 WAV 并按 1 分钟切分，返回 ArrayBuffer 数组 */
+/**
+ * 将音频切分为 16kHz 单声道 WAV，每段 ~60 秒，储存到 OPFS。
+ * 返回 { totalSegments, getSegment(i), cleanup() } — 按需读取，不堆积内存。
+ */
 async function prepareAudioForTranscription(file) {
+  const SEGMENT_SECONDS = 60;
   const ff = await getFFmpeg();
   registerFFLog(ff);
-
   const input = await mountInput(ff, file);
 
-  await ff.exec([
-    '-i', input.path,
-    '-vn',
-    '-acodec', 'pcm_s16le',
-    '-ar', '16000',
-    '-ac', '1',
-    '-f', 'segment',
-    '-segment_time', '60',
-    'seg_%03d.wav'
-  ]);
-
-  // 释放输入文件（WORKERFS unmount 或 MEMFS deleteFile）
-  await input.cleanup();
-
-  const segments = [];
-  let i = 0;
-  while (true) {
-    const name = 'seg_' + String(i).padStart(3, '0') + '.wav';
-    try {
-      const data = await ff.readFile(name);
-      segments.push(data.buffer);
-      await ff.deleteFile(name);
-      i++;
-    } catch {
+  // 探测时长
+  await ff.exec(['-i', input.path]).catch(() => {});
+  let duration = 0;
+  for (const msg of ffLogs) {
+    const m = msg.match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+    if (m) {
+      duration = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]) + parseInt(m[4]) / 100;
       break;
     }
   }
+  if (!duration || duration <= 0) throw new Error('无法获取音频时长');
 
-  return segments;
+  const totalSegments = Math.ceil(duration / SEGMENT_SECONDS);
+
+  // 逐段提取 → 写入 OPFS（WASM 堆仅持 1 个 ~1.83MB 的 WAV）
+  await cleanupOPFS();
+  const opfsDir = await getOPFSDir();
+
+  for (let i = 0; i < totalSegments; i++) {
+    const name = 'seg_' + String(i).padStart(3, '0') + '.wav';
+    await ff.exec([
+      '-ss', String(i * SEGMENT_SECONDS),
+      '-to', String((i + 1) * SEGMENT_SECONDS),
+      '-i', input.path,
+      '-vn',
+      '-acodec', 'pcm_s16le',
+      '-ar', '16000',
+      '-ac', '1',
+      name
+    ]);
+    const data = await ff.readFile(name);
+    await writeToOPFS(opfsDir, name, data);
+    await ff.deleteFile(name);
+  }
+
+  await input.cleanup();
+
+  return {
+    totalSegments,
+    async getSegment(i) {
+      const name = 'seg_' + String(i).padStart(3, '0') + '.wav';
+      const data = await readFromOPFS(opfsDir, name);
+      return data.buffer; // ArrayBuffer 兼容 fetch body
+    },
+    async cleanup() {
+      await cleanupOPFS();
+    }
+  };
 }
 
 // 文件上传转写
@@ -130,11 +152,11 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
   uploadedFileName = file.name;
   showProgress();
 
-  // 预处理：ffmpeg 切分为 1 分钟片段
-  let segments;
+  // 预处理：ffmpeg 逐片切分为 1 分钟 WAV，存入 OPFS
+  let prep;
   try {
     progressText.textContent = '正在预处理音频，切分为 1 分钟片段...';
-    segments = await prepareAudioForTranscription(file);
+    prep = await prepareAudioForTranscription(file);
   } catch (e) {
     progressContainer.style.display = 'none';
     console.error('音频预处理失败:', e);
@@ -146,7 +168,7 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
     return;
   }
 
-  const totalSegments = segments.length;
+  const totalSegments = prep.totalSegments;
   let allSegments = [];
   let timeOffset = 0;
   const errors = [];
@@ -167,7 +189,7 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
       const resp = await fetch('/raw?' + params.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
-        body: segments[i]
+        body: await prep.getSegment(i)
       });
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
@@ -200,6 +222,8 @@ document.getElementById('uploadSubmitBtn').addEventListener('click', async () =>
   hideProgress();
   resultBox.value = srtContent;
   downloadSrtBtn.disabled = false;
+
+  await prep.cleanup();
 });
 
 // =================== 视频提取音频下载 ===================
