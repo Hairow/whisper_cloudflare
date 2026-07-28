@@ -353,7 +353,7 @@
       registerFFLog(ff);
 
       // 挂载为 WORKERFS：直接传入 File 对象，零拷贝只读访问
-
+      // 不支持挂载 workerfs 
       await ff.mount('WORKERFS', { files: [file] }, '/mnt');
 
       await ff.exec([
