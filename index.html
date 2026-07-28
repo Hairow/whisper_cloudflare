@@ -284,10 +284,10 @@
     async function getFFmpeg() {
       if (ffmpeg) return ffmpeg;
       ffmpeg = new FFmpegWASM.FFmpeg();
-      ffmpeg.on('progress', ({ progress }) => {
-        progressBar.style.width = Math.round(progress * 100) + '%';
-        progressText.textContent = '处理中... ' + Math.round(progress * 100) + '%';
-      });
+      // ffmpeg.on('progress', ({ progress }) => {
+      //   progressBar.style.width = Math.round(progress * 100) + '%';
+      //   progressText.textContent = '处理中... ' + Math.round(progress * 100) + '%';
+      // });
 
       // @ffmpeg/ffmpeg JS 从本地 public/ 加载，core 内核从 CDN 加载
       await ffmpeg.load({
@@ -355,7 +355,7 @@
     async function mountInput(ff, file) {
       await ff.createDir('/mnt');
       await ff.mount('WORKERFS', { files: [file] }, '/mnt');
-      return { path: '/mnt/' + file.name, cleanup: () => ff.unmount('/mnt') };
+      return { path: '/mnt/' + file.name, cleanup: async () => { await ff.unmount('/mnt'); await ff.deleteDir('/mnt'); } };
     }
 
     /** 将音频文件转为 16kHz 单声道 WAV 并按 1 分钟切分，返回 ArrayBuffer 数组 */
@@ -552,15 +552,17 @@
             '-q:a', '2',
             chunkName
           ]);
-
+          console.log('in extractAudioForDownload, i=' + i)
           const data = await ff.readFile(chunkName);
           chunks.push(new Uint8Array(data));
           await ff.deleteFile(chunkName);
         }
 
+        console.log('begin merge chunk')
         // 3. 合并 MP3 片段
         const totalLen = chunks.reduce((s, c) => s + c.length, 0);
         const merged = new Uint8Array(totalLen);
+
         let offset = 0;
         for (const c of chunks) { merged.set(c, offset); offset += c.length; }
 
@@ -602,6 +604,7 @@
 
       try {
         const { data, ext, mime } = await extractAudioForDownload(file);
+        console.log('after extractAudioForDownload')
         const audioMB = (data.byteLength / (1024 * 1024)).toFixed(1);
         const filename = file.name.replace(/\.[^/.]+$/, '') + '.' + ext;
 
@@ -625,7 +628,8 @@
         const errMsg = e.message || String(e);
         const logTail = ffLogs.slice(-8).join('\n');
         if (errMsg.includes('out of memory') || errMsg.includes('memory access') || (logTail && logTail.includes('out of memory'))) {
-          resultBox.value = '音频提取失败：视频文件过大，超出了浏览器内存限制。\n\n请尝试使用较小的视频文件（建议 500MB 以内）。';
+          resultBox.value = errMsg
+          //resultBox.value = '音频提取失败：视频文件过大，超出了浏览器内存限制。\n\n请尝试使用较小的视频文件（建议 500MB 以内）。';
         } else {
           resultBox.value = '音频提取失败: ' + (errMsg || '未知错误') +
             '\n\n--- ffmpeg 最近日志 ---\n' + (logTail || '(无日志)') +
