@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "postinstall": "mkdir -p public/ffmpeg-umd && cp node_modules/@ffmpeg/ffmpeg/dist/umd/*.js public/ffmpeg-umd/",
+    "postinstall": "node scripts/copy-ffmpeg.js",
     "deploy": "npm run postinstall && wrangler deploy",
     "dev": "npm run postinstall && wrangler dev"
   },
