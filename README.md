@@ -8,7 +8,7 @@
 - **视频提取音频**：用浏览器端 ffmpeg.wasm 从视频中提取音频，然后转写
 - **SRT 字幕**：自动生成带时间戳的 SRT 字幕文件并下载
 - **VAD 过滤**：自动跳过静音段，减少无效消耗
-- **大文件支持**：启用 Cross-Origin Isolation，支持 1GB 以内的视频文件
+- **大文件支持**：浏览器端 ffmpeg.wasm 处理，支持 1GB 以内的视频文件
 - **多语言**：支持转写（transcribe）和翻译（translate）两种模式
 
 ## 免费额度
@@ -56,7 +56,32 @@ npx wrangler deploy
 - **后端**：Cloudflare Workers
 - **AI**：Cloudflare Workers AI（`@cf/openai/whisper-large-v3-turbo`）
 - **视频处理**：ffmpeg.wasm（浏览器端 WebAssembly）
-- **内存优化**：Cross-Origin Isolation（COOP + COEP），启用 SharedArrayBuffer 解锁 4GB WASM 堆
+- **前端**：`public/` 目录静态托管，单 HTML + 单 JS
+
+### ffmpeg.wasm 文件加载架构
+
+ffmpeg.wasm 由主线程 + Web Worker 双线程运行，涉及 4 个文件：
+
+```
+主线程                              Worker 线程
+   │
+   ├── <script> ffmpeg.js            ─── 主线程入口，暴露 API
+   └── new Worker(814.ffmpeg.js)     ─── 创建 Worker
+         │
+         ├── importScripts('ffmpeg-core.js')   ─── WASM 胶水代码
+         └── fetch('ffmpeg-core.wasm')         ─── WASM 二进制（9.9MB）
+```
+
+| 文件 | 加载方式 | 来源 | CORS 影响 |
+|---|---|---|---|
+| `ffmpeg.js` | `<script>` 标签 | `public/ffmpeg-umd/` 同源 | ❌ 不受限 |
+| `814.ffmpeg.js` | `new Worker()` | `public/ffmpeg-umd/` 同源 | ❌ 必须同源，本身满足 |
+| `ffmpeg-core.js` | `importScripts()` | CDN（unpkg） | ❌ importScripts 不检查 CORS，不检查 COEP|
+| `ffmpeg-core.wasm` | `fetch()` | CDN（unpkg） | ✅ CDN 需返回 CORS 头，但项目未启用 COEP，不强制 CORP |
+
+- `ffmpeg.js` / `814.ffmpeg.js` 由 `npm run postinstall` 从 `node_modules` 拷贝到 `public/ffmpeg-umd/`
+- `ffmpeg-core.js` / `ffmpeg-core.wasm` 直接从 unpkg CDN 加载
+- 未启用 COEP，WASM 堆上限 2GB（非 4GB），实际建议视频不超过 500MB 以保证稳定性
 
 ## API 接口
 
