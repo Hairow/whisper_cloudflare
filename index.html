@@ -545,20 +545,19 @@
 
           await ff.exec([
             '-ss', String(start),
-            '-t', String(SEGMENT_SECONDS),
+            '-to', String(start + SEGMENT_SECONDS),
             '-i', input.path,
             '-vn',
             '-c:a', 'libmp3lame',
             '-q:a', '2',
+            '-avoid_negative_ts', '1',
             chunkName
           ]);
-          console.log('in extractAudioForDownload, i=' + i)
           const data = await ff.readFile(chunkName);
           chunks.push(new Uint8Array(data));
           await ff.deleteFile(chunkName);
         }
 
-        console.log('begin merge chunk')
         // 3. 合并 MP3 片段
         const totalLen = chunks.reduce((s, c) => s + c.length, 0);
         const merged = new Uint8Array(totalLen);
