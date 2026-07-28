@@ -353,7 +353,7 @@
       registerFFLog(ff);
 
       // 挂载为 WORKERFS：直接传入 File 对象，零拷贝只读访问
-      await ff.mkdir('/mnt').catch(() => { });
+
       await ff.mount('WORKERFS', { files: [file] }, '/mnt');
 
       await ff.exec([
@@ -487,7 +487,7 @@
       const formatMB = (b) => (b / (1024 * 1024)).toFixed(0);
 
       // 挂载为 WORKERFS：直接传入 File 对象，零拷贝只读访问
-      await ff.mkdir('/mnt').catch(() => { });
+
       await ff.mount('WORKERFS', { files: [file] }, '/mnt');
 
       try {
