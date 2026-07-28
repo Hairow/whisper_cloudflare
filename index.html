@@ -507,10 +507,23 @@
       return { ff, input };
     }
 
+    /** 判断错误是否为 WASM 内存耗尽 */
+    function isWasmOOM(err) {
+      const msg = String(err?.message || err || '');
+      return /(memory access out of bounds|out of memory|abort|OOM)/i.test(msg);
+    }
+
+    /** 重建 ffmpeg 实例并重新挂载 WORKERFS，返回新实例 */
+    async function rebuildFFmpeg(file, oldInput) {
+      // 先安全卸载旧的 WORKERFS
+      try { await oldInput.cleanup(); } catch (_) { }
+      const { ff: newFF, input: newInput } = await getFFmpegWithInput(file);
+      return { ff: newFF, input: newInput };
+    }
+
     /** 从视频中提取音频用于下载（小文件一次性，大文件分段提取，编码为 MP3） */
     async function extractAudioForDownload(file) {
       const SEGMENT_SECONDS = 60;
-      const BATCH_SIZE = 40;       // 每批处理 40 个片段后重建 ffmpeg，避免 WASM 堆 OOM
       const ONE_SHOT_BYTES = 200 * 1024 * 1024;
       const formatMB = (b) => (b / (1024 * 1024)).toFixed(0);
 
@@ -539,7 +552,6 @@
 
       // 1. 首次初始化 ffmpeg 并探测视频时长
       const { ff: firstFF, input: firstInput } = await getFFmpegWithInput(file);
-      let firstInputCleanup = firstInput.cleanup;
 
       progressText.textContent = '正在探测视频时长...';
       await firstFF.exec(['-i', firstInput.path]).catch(() => { });
@@ -554,49 +566,67 @@
       }
       if (!duration || duration <= 0) throw new Error('无法获取视频时长');
 
-      // 2. 分批提取，每 BATCH_SIZE 个片段重建 ffmpeg 释放 WASM 堆
+      // 2. 分批提取，带 OOM 自动恢复
       const totalSegments = Math.ceil(duration / SEGMENT_SECONDS);
       const chunks = [];
+      const OOM_RETRY_LIMIT = 2;   // 每个片段 OOM 后最多重试 2 次
 
-      // 通用：处理一批片段（需要参数化的 ff + input + cleanup）
-      async function processBatch(batchIdx, ff, input, cleanup) {
-        const startSegIdx = batchIdx * BATCH_SIZE;
-        const endSegIdx = Math.min(startSegIdx + BATCH_SIZE, totalSegments);
-        for (let i = startSegIdx; i < endSegIdx; i++) {
-          const start = i * SEGMENT_SECONDS;
-          const chunkName = 'chunk_' + i + '.mp3';
+      // 用可变引用追踪当前 ffmpeg 实例，OOM 恢复时替换
+      let ctx = { ff: firstFF, input: firstInput };
 
-          progressBar.style.width = Math.round((i / totalSegments) * 90) + '%';
-          progressText.textContent = '提取音频片段 ' + (i + 1) + '/' + totalSegments;
+      // 清洗并重建：先在旧实例中清理残留文件，再销毁并重建
+      async function executorWithRecovery(i, chunkName) {
+        let lastErr = null;
+        let attempt = 0;
 
-          await ff.exec([
-            '-ss', String(start),
-            '-to', String(start + SEGMENT_SECONDS),
-            '-i', input.path,
-            '-vn',
-            '-c:a', 'libmp3lame',
-            '-q:a', '2',
-            '-avoid_negative_ts', '1',
-            chunkName
-          ]);
-          const data = await ff.readFile(chunkName);
-          chunks.push(new Uint8Array(data));
-          await ff.deleteFile(chunkName);
+        while (attempt < OOM_RETRY_LIMIT) {
+          try {
+            await ctx.ff.exec([
+              '-ss', String(i * SEGMENT_SECONDS),
+              '-to', String((i + 1) * SEGMENT_SECONDS),
+              '-i', ctx.input.path,
+              '-vn',
+              '-c:a', 'libmp3lame',
+              '-q:a', '2',
+              '-avoid_negative_ts', '1',
+              chunkName
+            ]);
+            // 成功，读取并搬出数据
+            const data = await ctx.ff.readFile(chunkName);
+            chunks.push(new Uint8Array(data));
+            await ctx.ff.deleteFile(chunkName);
+            return;
+          } catch (e) {
+            lastErr = e;
+            if (isWasmOOM(e) && attempt < OOM_RETRY_LIMIT - 1) {
+              console.warn('WASM OOM 检测到，正在重建 ffmpeg 并重试片段 ' + (i + 1) + '... (第' + (attempt + 1) + '次恢复)');
+              progressText.textContent = '检测到内存不足，正在重建处理引擎... (第' + (attempt + 1) + '次恢复)';
+              // 先尝试删除当前实例上可能残留的 chunk 文件
+              try { await ctx.ff.deleteFile(chunkName); } catch (_) { }
+              ctx = await rebuildFFmpeg(file, ctx.input);
+              progressText.textContent = '重建完成，继续处理片段 ' + (i + 1) + '/' + totalSegments;
+              attempt++;
+              continue;
+            }
+            // 非 OOM 错误或重试耗尽，直接抛出
+            throw lastErr;
+          }
         }
-        await cleanup(); // 释放当前实例的资源
+        throw lastErr;
       }
 
-      // 第一批：复用已经初始化的 ffmpeg 实例
-      await processBatch(0, firstFF, firstInput, firstInputCleanup);
+      // 3. 逐片段循环处理（OOM 时自动重建 ffmpeg 并重试）
+      for (let i = 0; i < totalSegments; i++) {
+        progressBar.style.width = Math.round((i / totalSegments) * 90) + '%';
+        progressText.textContent = '提取音频片段 ' + (i + 1) + '/' + totalSegments;
 
-      // 后续批次：每批重建 ffmpeg 实例
-      const totalBatches = Math.ceil(totalSegments / BATCH_SIZE);
-      for (let b = 1; b < totalBatches; b++) {
-        const { ff: batchFF, input: batchInput } = await getFFmpegWithInput(file);
-        await processBatch(b, batchFF, batchInput, batchInput.cleanup);
+        await executorWithRecovery(i, 'chunk_' + i + '.mp3');
       }
 
-      // 3. 合并 MP3 片段
+      // 最后一批的清理
+      await ctx.input.cleanup();
+
+      // 4. 合并 MP3 片段
       const totalLen = chunks.reduce((s, c) => s + c.length, 0);
       const merged = new Uint8Array(totalLen);
       let offset = 0;
