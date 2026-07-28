@@ -292,6 +292,7 @@
       // @ffmpeg/ffmpeg JS 从本地 public/ 加载，core 内核从 CDN 加载
       await ffmpeg.load({
         coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+        wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
       });
 
       return ffmpeg;
