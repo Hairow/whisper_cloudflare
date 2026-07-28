@@ -225,7 +225,7 @@
     <h2>视频提取音频</h2>
     <label>视频文件:</label>
     <input type="file" id="extractVideoFile" accept="video/*" required />
-    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式，文件不超过 1GB</div>
+    <div style="color:#888; font-size:0.85em; margin-top:2px;">支持 MP4、WebM、MOV、AVI、MKV 等常见视频格式，文件不超过 3GB</div>
     <div id="extractSizeWarn" style="display:none; color:#e74c3c; font-size:0.85em; margin-top:4px;"></div>
     <button id="extractSubmitBtn">提取音频</button>
   </div>
@@ -352,20 +352,11 @@
       const ff = await getFFmpeg();
       registerFFLog(ff);
 
-      const inputExt = file.name.split('.').pop().toLowerCase();
-      const inputName = 'input_trans.' + inputExt;
-
-      // 一次性写入，避免 offset 分块在大文件时截断
-      {
-        const buffer = await file.arrayBuffer();
-        await ff.writeFile(inputName, new Uint8Array(buffer));
-        // 建议浏览器尽早回收 ArrayBuffer
-        buffer.detach?.();
-        if (typeof gc === 'function') gc();
-      }
+      // 挂载为 WORKERFS：直接传入 File 对象，零拷贝只读访问
+      await ff.mount('WORKERFS', { files: [file] }, '/mnt');
 
       await ff.exec([
-        '-i', inputName,
+        '-i', '/mnt/' + file.name,
         '-vn',
         '-acodec', 'pcm_s16le',
         '-ar', '16000',
@@ -374,6 +365,9 @@
         '-segment_time', '60',
         'seg_%03d.wav'
       ]);
+
+      // 卸载 WORKERFS，释放引用
+      await ff.unmount('/mnt');
 
       const segments = [];
       let i = 0;
@@ -389,7 +383,6 @@
         }
       }
 
-      await ff.deleteFile(inputName);
       return segments;
     }
 
@@ -483,51 +476,95 @@
       ff.on('log', ({ message }) => { ffLogs.push(message); });
     }
 
-    /** 从视频中提取音频用于下载（编码为 MP3） */
+    /** 从视频中提取音频用于下载（小文件一次性，大文件分段提取，编码为 MP3） */
     async function extractAudioForDownload(file) {
       const ff = await getFFmpeg();
       registerFFLog(ff);
-      progressBar.style.width = '50%';
-      progressText.textContent = '正在加载视频文件（' + (file.size / (1024 * 1024)).toFixed(0) + ' MB）...';
 
-      const inputExt = file.name.split('.').pop().toLowerCase();
-      const inputName = 'input.' + inputExt;
-      const outputName = 'audio.mp3';
+      const SEGMENT_SECONDS = 60;
+      const ONE_SHOT_BYTES = 200 * 1024 * 1024; // 小于 200MB 直接一次性处理
+      const formatMB = (b) => (b / (1024 * 1024)).toFixed(0);
 
-      // 一次性加载整个文件写入 MEMFS，避免 offset 模式在大文件时截断
-      // 写入完成后 buffer 离开块作用域，GC 可立即回收
-      {
-        const buffer = await file.arrayBuffer();
-        await ff.writeFile(inputName, new Uint8Array(buffer));
-        // 建议浏览器尽早回收 ArrayBuffer
-        buffer.detach?.();
-        if (typeof gc === 'function') gc();
+      // 挂载为 WORKERFS：直接传入 File 对象，零拷贝只读访问
+      await ff.mount('WORKERFS', { files: [file] }, '/mnt');
+
+      try {
+        // 小文件快速通道：跳过时长探测，直接一次性提取
+        if (file.size <= ONE_SHOT_BYTES) {
+          progressBar.style.width = '90%';
+          progressText.textContent = '正在从视频中提取音频，编码为 MP3...';
+
+          await ff.exec([
+            '-i', '/mnt/' + file.name,
+            '-vn',
+            '-c:a', 'libmp3lame',
+            '-q:a', '2',
+            'audio.mp3'
+          ]);
+
+          const data = await ff.readFile('audio.mp3');
+          await ff.deleteFile('audio.mp3');
+          return { data: new Uint8Array(data), ext: 'mp3', mime: 'audio/mpeg' };
+        }
+
+        // 1. 探测视频时长（从 ffmpeg 日志中解析 Duration）
+        progressText.textContent = '正在探测视频时长...';
+        await ff.exec(['-i', '/mnt/' + file.name]).catch(() => {});
+
+        let duration = 0;
+        for (const msg of ffLogs) {
+          const m = msg.match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+          if (m) {
+            duration = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]) + parseInt(m[4]) / 100;
+            break;
+          }
+        }
+        registerFFLog(ff);
+
+        if (!duration || duration <= 0) throw new Error('无法获取视频时长');
+
+        // 2. 分段提取
+        const totalSegments = Math.ceil(duration / SEGMENT_SECONDS);
+        const chunks = [];
+
+        for (let i = 0; i < totalSegments; i++) {
+          const start = i * SEGMENT_SECONDS;
+          const chunkName = 'chunk_' + i + '.mp3';
+
+          progressBar.style.width = Math.round((i / totalSegments) * 90) + '%';
+          progressText.textContent = '提取音频片段 ' + (i + 1) + '/' + totalSegments;
+
+          await ff.exec([
+            '-ss', String(start),
+            '-t', String(SEGMENT_SECONDS),
+            '-i', '/mnt/' + file.name,
+            '-vn',
+            '-c:a', 'libmp3lame',
+            '-q:a', '2',
+            chunkName
+          ]);
+
+          const data = await ff.readFile(chunkName);
+          chunks.push(new Uint8Array(data));
+          await ff.deleteFile(chunkName);
+        }
+
+        // 3. 合并 MP3 片段
+        const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+
+        progressText.textContent = '音频提取完成（' + formatMB(merged.byteLength) + ' MB）';
+        return { data: merged, ext: 'mp3', mime: 'audio/mpeg' };
+      } finally {
+        await ff.unmount('/mnt');
       }
-
-      progressBar.style.width = '90%';
-      progressText.textContent = '正在从视频中提取音频，编码为 MP3...';
-
-      await ff.exec([
-        '-i', inputName,
-        '-vn',
-        '-c:a', 'libmp3lame',
-        '-q:a', '2',
-        outputName
-      ]);
-
-      const data = await ff.readFile(outputName);
-      await ff.deleteFile(inputName);
-      await ff.deleteFile(outputName);
-
-      return {
-        data,
-        ext: 'mp3',
-        mime: 'audio/mpeg',
-      };
     }
 
     // 视频文件大小校验（ffmpeg.wasm 需将整个文件加载到内存，过大易 OOM）
-    const MAX_VIDEO_BYTES = 1 * 1024 * 1024 * 1024;
+    const MAX_VIDEO_BYTES = 3 * 1024 * 1024 * 1024;
+    //选择视频文件验证大小
     document.getElementById('extractVideoFile').addEventListener('change', (e) => {
       const file = e.target.files[0];
       const warn = document.getElementById('extractSizeWarn');
@@ -535,7 +572,7 @@
       const extractHint = document.querySelector('#panel-extract div');
       if (file && file.size > MAX_VIDEO_BYTES) {
         const gb = (file.size / (1024 * 1024 * 1024)).toFixed(2);
-        warn.textContent = '文件过大（' + gb + ' GB），浏览器内存有限，无法处理超过 1GB 的视频。';
+        warn.textContent = '文件过大（' + gb + ' GB），浏览器内存有限，无法处理超过 3GB 的视频。';
         warn.style.display = 'block';
         btn.disabled = true;
         if (extractHint) extractHint.style.display = 'none';
@@ -545,7 +582,7 @@
         if (extractHint) extractHint.style.display = '';
       }
     });
-
+    //提取音频
     document.getElementById('extractSubmitBtn').addEventListener('click', async () => {
       const fileInput = document.getElementById('extractVideoFile');
       const file = fileInput.files[0];
