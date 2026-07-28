@@ -246,13 +246,43 @@ async function rebuildFFmpeg(file, oldInput) {
   return { ff: newFF, input: newInput };
 }
 
-/** 从视频中提取音频用于下载（小文件一次性，大文件分段提取，编码为 MP3） */
+// =================== OPFS 临时存储 ===================
+const OPFS_TEMP_DIR = 'ffmpeg-chunks';
+
+async function getOPFSDir(create = true) {
+  const root = await navigator.storage.getDirectory();
+  return root.getDirectoryHandle(OPFS_TEMP_DIR, { create });
+}
+
+async function writeToOPFS(dir, name, data) {
+  const handle = await dir.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(data);
+  await writable.close();
+}
+
+async function readFromOPFS(dir, name) {
+  const handle = await dir.getFileHandle(name);
+  const file = await handle.getFile();
+  return new Uint8Array(await file.arrayBuffer());
+}
+
+async function removeFromOPFS(dir, name) {
+  try { await dir.removeEntry(name); } catch (_) { }
+}
+
+async function cleanupOPFS() {
+  const root = await navigator.storage.getDirectory();
+  try { await root.removeEntry(OPFS_TEMP_DIR, { recursive: true }); } catch (_) { }
+}
+
+/** 从视频中提取音频用于下载（小文件一次性，大文件分段提取 + OPFS 存储 + JS 拼接） */
 async function extractAudioForDownload(file) {
   const SEGMENT_SECONDS = 60;
   const ONE_SHOT_BYTES = 200 * 1024 * 1024;
   const formatMB = (b) => (b / (1024 * 1024)).toFixed(0);
 
-  // 小文件快速通道
+  // 小文件快速通道（单次提取，不需要 OPFS）
   if (file.size <= ONE_SHOT_BYTES) {
     const { ff, input } = await getFFmpegWithInput(file);
     try {
@@ -263,7 +293,7 @@ async function extractAudioForDownload(file) {
         '-i', input.path,
         '-vn',
         '-c:a', 'libmp3lame',
-        '-q:a', '2',
+        '-b:a', '128k',
         'audio.mp3'
       ]);
 
@@ -275,7 +305,11 @@ async function extractAudioForDownload(file) {
     }
   }
 
-  // 1. 首次初始化 ffmpeg 并探测视频时长
+  // ---- 大文件：分段提取 + OPFS 存储 + 纯 JS 拼接 ----
+
+  await cleanupOPFS();
+
+  // 1. 初始化 ffmpeg + 探测视频时长
   const { ff: firstFF, input: firstInput } = await getFFmpegWithInput(file);
 
   progressText.textContent = '正在探测视频时长...';
@@ -291,18 +325,19 @@ async function extractAudioForDownload(file) {
   }
   if (!duration || duration <= 0) throw new Error('无法获取视频时长');
 
-  // 2. 分批提取，带 OOM 自动恢复
+  // 2. 逐段提取 → 直接写入 OPFS（WASM 堆仅持有一个 ~1MB 的 chunk）
   const totalSegments = Math.ceil(duration / SEGMENT_SECONDS);
-  const chunks = [];
-  const OOM_RETRY_LIMIT = 2;   // 每个片段 OOM 后最多重试 2 次
-
-  // 用可变引用追踪当前 ffmpeg 实例，OOM 恢复时替换
+  const OOM_RETRY_LIMIT = 2;
+  const CHUNK_NAME = 'chunk.mp3';
+  const opfsDir = await getOPFSDir();
   let ctx = { ff: firstFF, input: firstInput };
+  let extractedCount = 0;
 
-  async function executorWithRecovery(i, chunkName) {
-    let lastErr = null;
+  for (let i = 0; i < totalSegments; i++) {
+    progressBar.style.width = Math.round((i / totalSegments) * 80) + '%';
+    progressText.textContent = '提取音频片段 ' + (i + 1) + '/' + totalSegments;
+
     let attempt = 0;
-
     while (attempt < OOM_RETRY_LIMIT) {
       try {
         await ctx.ff.exec([
@@ -311,96 +346,83 @@ async function extractAudioForDownload(file) {
           '-i', ctx.input.path,
           '-vn',
           '-c:a', 'libmp3lame',
-          '-q:a', '2',
+          '-b:a', '128k',
+          '-write_xing', '0',
           '-avoid_negative_ts', '1',
-          chunkName
+          CHUNK_NAME
         ]);
-        // 成功，读取并搬出数据
-        const data = await ctx.ff.readFile(chunkName);
-        chunks.push(new Uint8Array(data));
-        await ctx.ff.deleteFile(chunkName);
-        return;
+
+        const data = await ctx.ff.readFile(CHUNK_NAME);
+        await writeToOPFS(opfsDir, 'chunk_' + i + '.mp3', data);
+        await ctx.ff.deleteFile(CHUNK_NAME);
+        extractedCount = i + 1;
+        break;
       } catch (e) {
-        lastErr = e;
         if (isWasmOOM(e) && attempt < OOM_RETRY_LIMIT - 1) {
-          console.warn('WASM OOM 检测到，正在重建 ffmpeg 并重试片段 ' + (i + 1) + '... (第' + (attempt + 1) + '次恢复)');
-          progressText.textContent = '检测到内存不足，正在重建处理引擎... (第' + (attempt + 1) + '次恢复)';
-          // 先尝试删除当前实例上可能残留的 chunk 文件
-          try { await ctx.ff.deleteFile(chunkName); } catch (_) { }
+          console.warn('WASM OOM，重建 ffmpeg 并重试片段 ' + (i + 1));
+          progressText.textContent = '内存不足，重建处理引擎...';
+          try { await ctx.ff.deleteFile(CHUNK_NAME); } catch (_) { }
           ctx = await rebuildFFmpeg(file, ctx.input);
-          progressText.textContent = '重建完成，继续处理片段 ' + (i + 1) + '/' + totalSegments;
           attempt++;
           continue;
         }
-        // 非 OOM 错误或重试耗尽，直接抛出
-        throw lastErr;
+        throw e;
       }
     }
-    throw lastErr;
   }
 
-  // 3. 逐片段循环处理（OOM 时自动重建 ffmpeg 并重试）
-  for (let i = 0; i < totalSegments; i++) {
-    progressBar.style.width = Math.round((i / totalSegments) * 90) + '%';
-    progressText.textContent = '提取音频片段 ' + (i + 1) + '/' + totalSegments;
-
-    await executorWithRecovery(i, 'chunk_' + i + '.mp3');
-  }
-
-  // 最后一批的清理
+  // 释放 ffmpeg 实例——后续不再需要 WASM
   await ctx.input.cleanup();
+  try { ctx.ff.terminate(); } catch (_) { }
+  ctx = null;
 
-  // 4. 用 ffmpeg concat demuxer 合并 MP3（字节拼接会丢失时长信息）
-  progressText.textContent = '正在合并音频片段...';
+  // 3. 创建 ReadableStream，从 OPFS 逐片读出 → 直接喂给 Blob
+  //    CBR 128kbps + -write_xing 0 → 每片是纯 MPEG 音频帧流，直接拼接即有效 MP3
+  progressBar.style.width = '90%';
+  progressText.textContent = '正在流式合并 ' + extractedCount + ' 个音频片段...';
 
-  const mergeFF = new FFmpegWASM.FFmpeg();
-  await mergeFF.load({
-    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+  // 先统计总大小
+  let totalSize = 0;
+  for (let i = 0; i < extractedCount; i++) {
+    const handle = await opfsDir.getFileHandle('chunk_' + i + '.mp3');
+    totalSize += (await handle.getFile()).size;
+  }
+
+  let streamDone = false;
+  const stream = new ReadableStream({
+    async start(controller) {
+      for (let i = 0; i < extractedCount; i++) {
+        const data = await readFromOPFS(opfsDir, 'chunk_' + i + '.mp3');
+        controller.enqueue(data);
+        // 读完一片立即从 OPFS 删除，释放磁盘空间
+        await removeFromOPFS(opfsDir, 'chunk_' + i + '.mp3');
+      }
+      controller.close();
+      await cleanupOPFS();
+      streamDone = true;
+    }
   });
 
-  try {
-    // 将所有 chunk 写入新实例的 MEMFS
-    let list = '';
-    for (let i = 0; i < chunks.length; i++) {
-      const name = 'c' + i + '.mp3';
-      await mergeFF.writeFile(name, chunks[i]);
-      list += "file '" + name + "'\n";
-    }
-    await mergeFF.writeFile('concat.txt', list);
-
-    // concat demuxer + stream copy（不重新编码，快且正确写入时长元数据）
-    await mergeFF.exec(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', 'merged.mp3']);
-
-    const mergedData = await mergeFF.readFile('merged.mp3');
-    const merged = new Uint8Array(mergedData);
-    chunks.length = 0; // 释放中间 chunks 占用的 JS 内存
-
-    progressText.textContent = '音频提取完成（' + formatMB(merged.byteLength) + ' MB）';
-    return { data: merged, ext: 'mp3', mime: 'audio/mpeg' };
-  } finally {
-    try { mergeFF.terminate(); } catch (_) { }
-  }
+  progressText.textContent = '音频提取完成（~' + formatMB(totalSize) + ' MB），正在准备下载...';
+  return {
+    stream,
+    size: totalSize,
+    ext: 'mp3',
+    mime: 'audio/mpeg',
+    opfsCleanup: async () => { if (!streamDone) await cleanupOPFS(); }
+  };
 }
 
-// 视频文件大小校验（ffmpeg.wasm 需将整个文件加载到内存，过大易 OOM）
-const MAX_VIDEO_BYTES = 3 * 1024 * 1024 * 1024;
-//选择视频文件验证大小
+// 视频文件选择（WORKERFS + OPFS 已无大小限制）
 document.getElementById('extractVideoFile').addEventListener('change', (e) => {
   const file = e.target.files[0];
-  const warn = document.getElementById('extractSizeWarn');
-  const btn = document.getElementById('extractSubmitBtn');
-  const extractHint = document.querySelector('#panel-extract div');
-  if (file && file.size > MAX_VIDEO_BYTES) {
-    const gb = (file.size / (1024 * 1024 * 1024)).toFixed(2);
-    warn.textContent = '文件过大（' + gb + ' GB），浏览器内存有限，无法处理超过 3GB 的视频。';
-    warn.style.display = 'block';
-    btn.disabled = true;
-    if (extractHint) extractHint.style.display = 'none';
+  const info = document.getElementById('extractSizeInfo');
+  if (file) {
+    const gb = (file.size / (1024 * 1024 * 1024)).toFixed(1);
+    info.textContent = file.name + '（' + gb + ' GB）— WORKERFS 零拷贝 + OPFS 临时存储，无文件大小限制';
+    info.style.display = 'block';
   } else {
-    warn.style.display = 'none';
-    btn.disabled = false;
-    if (extractHint) extractHint.style.display = '';
+    info.style.display = 'none';
   }
 });
 //提取音频
@@ -409,17 +431,70 @@ document.getElementById('extractSubmitBtn').addEventListener('click', async () =
   const file = fileInput.files[0];
   if (!file) return alert('请选择一个视频文件。');
 
+  const filename = file.name.replace(/\.[^/.]+$/, '') + '.mp3';
+
+  // showSaveFilePicker 必须在用户手势内调用，先弹保存对话框再提取
+  if (typeof window.showSaveFilePicker === 'function') {
+    let handle, writable;
+    try {
+      handle = await window.showSaveFilePicker({ suggestedName: filename });
+      writable = await handle.createWritable();
+    } catch (e) {
+      if (e.name === 'AbortError') return; // 用户取消保存对话框
+      throw e;
+    }
+
+    showProgress();
+    progressText.textContent = '检测到视频文件，准备提取音频...';
+
+    try {
+      const result = await extractAudioForDownload(file);
+
+      if (result.stream) {
+        // 大文件：流式写入磁盘，内存峰值仅 1 个 chunk
+        const totalMB = (result.size / (1024 * 1024)).toFixed(1);
+        progressText.textContent = '正在保存音频... ' + totalMB + ' MB';
+        await result.stream.pipeTo(writable);
+        await result.opfsCleanup();
+      } else {
+        // 小文件：直接写入
+        await writable.write(result.data);
+        await writable.close();
+      }
+
+      hideProgress();
+      resultBox.value = '提取并下载完成：' + filename;
+    } catch (e) {
+      // 提取失败时关闭/丢弃文件
+      try { await writable.abort(); } catch (_) { }
+      progressContainer.style.display = 'none';
+      console.error('提取音频失败:', e);
+      console.error('ffmpeg 日志:', ffLogs.join('\n'));
+      const errMsg = e.message || String(e);
+      const logTail = ffLogs.slice(-8).join('\n');
+      if (errMsg.includes('out of memory') || errMsg.includes('memory access') || (logTail && logTail.includes('out of memory'))) {
+        resultBox.value = errMsg;
+      } else {
+        resultBox.value = '音频提取失败: ' + (errMsg || '未知错误') +
+          '\n\n--- ffmpeg 最近日志 ---\n' + (logTail || '(无日志)') +
+          '\n\n请确认浏览器支持 WebAssembly，也可打开开发者控制台查看详细错误。';
+      }
+    }
+    return;
+  }
+
+  // 降级：Blob URL 方式（Firefox / Safari 不支持 showSaveFilePicker）
   showProgress();
   progressText.textContent = '检测到视频文件，准备提取音频...';
 
   try {
-    const { data, ext, mime } = await extractAudioForDownload(file);
+    const result = await extractAudioForDownload(file);
 
-    const audioMB = (data.byteLength / (1024 * 1024)).toFixed(1);
-    const filename = file.name.replace(/\.[^/.]+$/, '') + '.' + ext;
+    const response = result.stream
+      ? new Response(result.stream, { headers: { 'Content-Type': result.mime } })
+      : new Response(result.data, { headers: { 'Content-Type': result.mime } });
 
-    // 直接触发下载
-    const blob = new Blob([data], { type: mime });
+    const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -427,6 +502,9 @@ document.getElementById('extractSubmitBtn').addEventListener('click', async () =
     a.click();
     URL.revokeObjectURL(url);
 
+    if (result.stream) await result.opfsCleanup();
+
+    const audioMB = (blob.size / (1024 * 1024)).toFixed(1);
     hideProgress();
     resultBox.value = '提取并下载完成：' + filename + '（' + audioMB + ' MB）';
   } catch (e) {
