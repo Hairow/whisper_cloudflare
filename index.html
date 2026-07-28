@@ -347,17 +347,25 @@
 
     // =================== 音频预处理（ffmpeg 切分） ===================
 
+    /**
+     * 通过 WORKERFS 零拷贝挂载输入文件到 ffmpeg 虚拟文件系统。
+     * 返回 { path, cleanup }，path 用于 ffmpeg -i，finally 中调用 cleanup()。
+     */
+    async function mountInput(ff, file) {
+      await ff.createDir('/mnt');
+      await ff.mount('WORKERFS', { files: [file] }, '/mnt');
+      return { path: '/mnt/' + file.name, cleanup: () => ff.unmount('/mnt') };
+    }
+
     /** 将音频文件转为 16kHz 单声道 WAV 并按 1 分钟切分，返回 ArrayBuffer 数组 */
     async function prepareAudioForTranscription(file) {
       const ff = await getFFmpeg();
       registerFFLog(ff);
 
-      // 挂载为 WORKERFS：直接传入 File 对象，零拷贝只读访问
-      // 不支持挂载 workerfs 
-      await ff.mount('WORKERFS', { files: [file] }, '/mnt');
+      const input = await mountInput(ff, file);
 
       await ff.exec([
-        '-i', '/mnt/' + file.name,
+        '-i', input.path,
         '-vn',
         '-acodec', 'pcm_s16le',
         '-ar', '16000',
@@ -367,8 +375,8 @@
         'seg_%03d.wav'
       ]);
 
-      // 卸载 WORKERFS，释放引用
-      await ff.unmount('/mnt');
+      // 释放输入文件（WORKERFS unmount 或 MEMFS deleteFile）
+      await input.cleanup();
 
       const segments = [];
       let i = 0;
@@ -486,9 +494,7 @@
       const ONE_SHOT_BYTES = 200 * 1024 * 1024; // 小于 200MB 直接一次性处理
       const formatMB = (b) => (b / (1024 * 1024)).toFixed(0);
 
-      // 挂载为 WORKERFS：直接传入 File 对象，零拷贝只读访问
-
-      await ff.mount('WORKERFS', { files: [file] }, '/mnt');
+      const input = await mountInput(ff, file);
 
       try {
         // 小文件快速通道：跳过时长探测，直接一次性提取
@@ -497,7 +503,7 @@
           progressText.textContent = '正在从视频中提取音频，编码为 MP3...';
 
           await ff.exec([
-            '-i', '/mnt/' + file.name,
+            '-i', input.path,
             '-vn',
             '-c:a', 'libmp3lame',
             '-q:a', '2',
@@ -511,7 +517,7 @@
 
         // 1. 探测视频时长（从 ffmpeg 日志中解析 Duration）
         progressText.textContent = '正在探测视频时长...';
-        await ff.exec(['-i', '/mnt/' + file.name]).catch(() => { });
+        await ff.exec(['-i', input.path]).catch(() => { });
 
         let duration = 0;
         for (const msg of ffLogs) {
@@ -539,7 +545,7 @@
           await ff.exec([
             '-ss', String(start),
             '-t', String(SEGMENT_SECONDS),
-            '-i', '/mnt/' + file.name,
+            '-i', input.path,
             '-vn',
             '-c:a', 'libmp3lame',
             '-q:a', '2',
@@ -560,7 +566,7 @@
         progressText.textContent = '音频提取完成（' + formatMB(merged.byteLength) + ' MB）';
         return { data: merged, ext: 'mp3', mime: 'audio/mpeg' };
       } finally {
-        await ff.unmount('/mnt');
+        await input.cleanup();
       }
     }
 
