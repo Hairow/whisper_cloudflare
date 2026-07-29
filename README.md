@@ -4,11 +4,13 @@
 
 ## 功能
 
-- **音频转写**：上传音频文件，直接转写为文字
-- **视频提取音频**：用浏览器端 ffmpeg.wasm 从视频中提取音频，然后转写
-- **SRT 字幕**：自动生成带时间戳的 SRT 字幕文件并下载
+- **音频转写**：上传音频文件，转写为带时间戳的文字
+- **视频提取音频**：用浏览器端 ffmpeg.wasm 从视频中提取 MP3 音频并下载
+- **视频→字幕**：先提取音频再转写，一条龙生成 SRT 字幕
 - **VAD 过滤**：自动跳过静音段，减少无效消耗
-- **大文件支持**：浏览器端 ffmpeg.wasm 处理，支持 1GB 以内的视频文件
+- **大文件支持**：WORKERFS 零拷贝 + OPFS 流式存储，**无文件大小限制**
+- **OOM 自动恢复**：WASM 内存耗尽时自动重建 ffmpeg 实例，继续处理
+- **流式下载**：Chrome / Edge 通过 File System Access API 直接写入磁盘，内存峰值 ~1MB
 - **多语言**：支持转写（transcribe）和翻译（translate）两种模式
 
 ## 免费额度
@@ -56,7 +58,49 @@ npx wrangler deploy
 - **后端**：Cloudflare Workers
 - **AI**：Cloudflare Workers AI（`@cf/openai/whisper-large-v3-turbo`）
 - **视频处理**：ffmpeg.wasm（浏览器端 WebAssembly）
+- **大文件存储**：OPFS（Origin Private File System）
 - **前端**：`public/` 目录静态托管，单 HTML + 单 JS
+
+### 音频处理架构
+
+#### 视频提取音频（→ 下载 MP3）
+
+```
+WORKERFS 零拷贝挂载视频文件
+  ↓
+ffmpeg -ss -to 逐段提取 MP3（每段 60 秒，CBR 128kbps，无 Xing 头）
+  ↓
+每段写入 OPFS（WASM 堆仅持 1 个 ~1MB chunk，OOM 自动恢复）
+  ↓
+ReadableStream 从 OPFS 逐片读出 → showSaveFilePicker 流式写入磁盘
+  （内存峰值 ~1MB，无文件大小限制）
+```
+
+#### 音频转写（→ SRT 字幕）
+
+```
+WORKERFS 零拷贝挂载音频文件
+  ↓
+ffmpeg -ss -to 逐段提取 WAV（16kHz 单声道 PCM，每段 60 秒）
+  ↓
+每段写入 OPFS（WASM 堆仅持 1 个 ~1.83MB WAV）
+  ↓
+按需从 OPFS 逐段读取 → POST /raw 转写 → 合并 SRT
+```
+
+
+### 静态资源路由
+
+Cloudflare Workers + Assets 模式下，`public/` 下的文件由平台直接托管，不经过 Worker：
+
+| 路径 | 处理方式 |
+|------|---------|
+| `/` | Platform Assets → `public/index.html` |
+| `/index.html` | Platform Assets → `public/index.html` |
+| `/app.js` | Platform Assets → `public/app.js` |
+| `/ffmpeg-umd/…` | Platform Assets → `public/ffmpeg-umd/…` |
+| `POST /raw` | Worker → Whisper 转写 API |
+| 其他 | Worker → 404 |
 
 ### ffmpeg.wasm 文件加载架构
 
@@ -81,7 +125,7 @@ ffmpeg.wasm 由主线程 + Web Worker 双线程运行，涉及 4 个文件：
 
 - `ffmpeg.js` / `814.ffmpeg.js` 由 `npm run postinstall` 从 `node_modules` 拷贝到 `public/ffmpeg-umd/`
 - `ffmpeg-core.js` / `ffmpeg-core.wasm` 直接从 unpkg CDN 加载
-- 未启用 COEP，WASM 堆上限 2GB（非 4GB），实际建议视频不超过 500MB 以保证稳定性
+- 使用单线程版 core（`dist/umd`），WASM 堆上限 128MB
 
 ### 通信模型
 
