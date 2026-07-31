@@ -46,15 +46,26 @@ async function transcribeChunk(chunk, env, params) {
  * }} [params] - 可选控制参数
  * @returns {Promise<{ description: string }>}
  */
+const VISION_MODEL = '@cf/meta/llama-3.2-11b-vision-instruct';
+
 async function describeImage(image, env, params = {}) {
-  // LLaVA 需要整数数组（0-255），不支持 base64/data URI
+  const question = params.question || 'Describe this image in detail.';
+
   const inputs = {
-    image: [...new Uint8Array(image)],
-    prompt: params.question || '识别图片中的内容',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'image', image: new Uint8Array(image) },
+          { type: 'text', text: question },
+        ],
+      },
+    ],
     max_tokens: params.max_tokens || 512,
+    temperature: 0.1,
   };
 
-  return await env.AI.run('@cf/llava-hf/llava-1.5-7b-hf', inputs);
+  return await env.AI.run(VISION_MODEL, inputs);
 }
 
 // =================== 路由处理 ===================
@@ -119,8 +130,8 @@ async function handleImageToText(request, url, env) {
     return new Response('Image recognition failed: ' + msg, { status: 500 });
   }
 
-  // LLaVA 返回 { description: "..." }
-  const description = result.description || '';
+  // Llama 3.2 Vision 返回 { response: "..." }
+  const description = result.response || '';
   return Response.json({ description });
 }
 
