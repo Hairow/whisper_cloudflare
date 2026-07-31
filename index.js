@@ -47,9 +47,9 @@ async function transcribeChunk(chunk, env, params) {
  * @returns {Promise<{ description: string }>}
  */
 async function describeImage(image, env, params = {}) {
-  const b64 = arrayBufferToBase64(image);
+  // LLaVA 需要整数数组（0-255），不支持 base64/data URI
   const inputs = {
-    image: `data:${params.mimeType || 'image/png'};base64,${b64}`,
+    image: [...new Uint8Array(image)],
     prompt: params.question || 'Describe this image in detail.',
     max_tokens: params.max_tokens || 512,
   };
