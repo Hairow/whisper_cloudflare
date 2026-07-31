@@ -69,7 +69,7 @@ async function describeImage(image, env, params = {}) {
     inputs.caption_length = params.caption_length || 'normal';
   }
 
-  return await env.AI.run('@cf/moondream/moondream3-9b', inputs);
+  return await env.AI.run('@cf/moondream/moondream3.1-9B-A2B', inputs);
 }
 
 // =================== 路由处理 ===================
