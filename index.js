@@ -36,19 +36,40 @@ async function transcribeChunk(chunk, env, params) {
 }
 
 /**
- * 通过 AI 视觉模型识别并描述图片内容
+ * 通过 AI 视觉模型识别图片内容（Moondream vision model）
  * @param {ArrayBuffer} image - 图片二进制数据
  * @param {Env} env - Cloudflare Workers 环境绑定
- * @param {{ prompt?: string, max_tokens?: number }} [params] - 可选控制参数
+ * @param {{
+ *   task?: 'query' | 'caption',
+ *   question?: string,
+ *   caption_length?: 'short' | 'normal' | 'long',
+ *   temperature?: number,
+ *   top_p?: number,
+ *   max_tokens?: number,
+ * }} [params] - 可选控制参数
  * @returns {Promise<{ description: string }>}
  */
 async function describeImage(image, env, params = {}) {
+  const task = params.task || 'query';
+
   const inputs = {
     image: arrayBufferToBase64(image),
-    prompt: params.prompt || '请详细描述图片中的内容，包括其中出现的文字。',
+    task,
+    temperature: params.temperature ?? 0.2,
+    top_p: params.top_p ?? 0.9,
     max_tokens: params.max_tokens || 512,
+    stream: false,          // 非流式，等待完整结果
   };
-  return await env.AI.run('@cf/unum/uform-gen2-qwen-500m', inputs);
+
+  if (task === 'query') {
+    inputs.question = params.question || 'What is in this image? Describe it in detail.';
+  }
+
+  if (task === 'caption') {
+    inputs.caption_length = params.caption_length || 'normal';
+  }
+
+  return await env.AI.run('@cf/moondream/moondream3-9b', inputs);
 }
 
 // =================== 路由处理 ===================
@@ -90,7 +111,11 @@ async function handleImageToText(request, url, env) {
   }
 
   const params = {
-    prompt: url.searchParams.get('prompt') || null,
+    task: url.searchParams.get('task') || 'query',
+    question: url.searchParams.get('question') || null,
+    caption_length: url.searchParams.get('caption_length') || 'normal',
+    temperature: parseFloat(url.searchParams.get('temperature')) || 0.2,
+    top_p: parseFloat(url.searchParams.get('top_p')) || 0.9,
     max_tokens: parseInt(url.searchParams.get('max_tokens')) || 512,
   };
 
@@ -112,8 +137,11 @@ async function handleImageToText(request, url, env) {
     return new Response('Image recognition failed: ' + msg, { status: 500 });
   }
 
+  // output 按 task 区分：query → answer，caption → caption
+  const description = result.answer || result.caption || '';
   return Response.json({
-    description: result.description || '',
+    description,
+    task: params.task,
   });
 }
 

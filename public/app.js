@@ -564,5 +564,40 @@ function downloadFile(content, ext, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+// =================== 图片文字识别 ===================
+
+document.getElementById('imageSubmitBtn').addEventListener('click', async () => {
+  const fileInput = document.getElementById('imageFile');
+  const file = fileInput.files[0];
+  if (!file) return alert('请选择一张图片。');
+
+  showProgress();
+  progressText.textContent = '正在识别图片内容...';
+
+  try {
+    const question = document.getElementById('imagePrompt').value.trim();
+    const params = new URLSearchParams();
+    if (question) params.set('question', question);
+
+    const resp = await fetch('/seg?' + params.toString(), {
+      method: 'POST',
+      body: file,           // 浏览器自动设置 Content-Type: image/png 等
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(errText || 'HTTP ' + resp.status);
+    }
+
+    const data = await resp.json();
+    resultBox.value = data.description || '（未识别到内容）';
+  } catch (e) {
+    console.error('图片识别失败:', e);
+    resultBox.value = '图片识别失败: ' + (e.message || String(e));
+  }
+
+  hideProgress();
+});
+
 // 下载 SRT
 downloadSrtBtn.addEventListener('click', () => downloadFile(srtContent, 'srt', 'text/plain;charset=utf-8'));
