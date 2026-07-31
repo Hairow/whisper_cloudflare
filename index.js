@@ -46,26 +46,14 @@ async function transcribeChunk(chunk, env, params) {
  * }} [params] - 可选控制参数
  * @returns {Promise<{ description: string }>}
  */
-const VISION_MODEL = '@cf/meta/llama-3.2-11b-vision-instruct';
-
 async function describeImage(image, env, params = {}) {
-  const question = params.question || 'Describe this image in detail.';
-
   const inputs = {
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: new Uint8Array(image) },
-          { type: 'text', text: question },
-        ],
-      },
-    ],
+    image: [...new Uint8Array(image)],
+    prompt: params.question || 'Describe this image in detail.',
     max_tokens: params.max_tokens || 512,
-    temperature: 0.1,
   };
 
-  return await env.AI.run(VISION_MODEL, inputs);
+  return await env.AI.run('@cf/llava-hf/llava-1.5-7b-hf', inputs);
 }
 
 // =================== 路由处理 ===================
@@ -124,14 +112,11 @@ async function handleImageToText(request, url, env) {
     result = await describeImage(image, env, params);
   } catch (e) {
     const msg = String(e?.message || e || '');
-    if (msg.includes('quota') || msg.includes('exceeded') || msg.includes('limit')) {
-      return new Response('Daily free quota exceeded. Please try again after 00:00 UTC.', { status: 429 });
-    }
     return new Response('Image recognition failed: ' + msg, { status: 500 });
   }
 
-  // Llama 3.2 Vision 返回 { response: "..." }
-  const description = result.response || '';
+  // LLaVA 返回 { description: "..." }
+  const description = result.description || '';
   return Response.json({ description });
 }
 
