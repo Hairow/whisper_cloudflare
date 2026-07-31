@@ -49,7 +49,7 @@ async function transcribeChunk(chunk, env, params) {
 async function describeImage(image, env, params = {}) {
   const inputs = {
     image: [...new Uint8Array(image)],
-    prompt: params.question || 'Describe this image in detail.',
+    prompt: params.question || '识别图片的文字内容',
     max_tokens: params.max_tokens || 512,
   };
 
