@@ -4,7 +4,11 @@ export default {
 
     // POST /raw - 上传音频并转写
     if (request.method === 'POST' && url.pathname === '/raw') {
-      return handleUpload(request, url, env);
+      return handleAudioToText(request, url, env);
+    }
+    //POST /seg - 上传图片转文字
+    if (request.method === 'POST' && url.pathname === '/seg') {
+      return handleImageToText(request, url, env);
     }
 
 
@@ -12,10 +16,10 @@ export default {
   }
 };
 
-// =================== 转写处理 ===================
+// =================== AI处理 ===================
 
 /**
- * 转写单个音频块
+ * 通过AI转写单个音频块
  * @returns {{ text: string, segments: Array }} Whisper 返回的结果
  */
 async function transcribeChunk(chunk, env, params) {
@@ -31,10 +35,26 @@ async function transcribeChunk(chunk, env, params) {
   return await env.AI.run("@cf/openai/whisper-large-v3-turbo", inputs);
 }
 
+/**
+ * 通过 AI 视觉模型识别并描述图片内容
+ * @param {ArrayBuffer} image - 图片二进制数据
+ * @param {Env} env - Cloudflare Workers 环境绑定
+ * @param {{ prompt?: string, max_tokens?: number }} [params] - 可选控制参数
+ * @returns {Promise<{ description: string }>}
+ */
+async function describeImage(image, env, params = {}) {
+  const inputs = {
+    image: arrayBufferToBase64(image),
+    prompt: params.prompt || '请详细描述图片中的内容，包括其中出现的文字。',
+    max_tokens: params.max_tokens || 512,
+  };
+  return await env.AI.run('@cf/unum/uform-gen2-qwen-500m', inputs);
+}
+
 // =================== 路由处理 ===================
 
 /** POST /raw - 上传音频片段并转写（前端已按 1 分钟切分） */
-async function handleUpload(request, url, env) {
+async function handleAudioToText(request, url, env) {
   const contentType = request.headers.get('content-type') || '';
   if (!contentType.includes('application/octet-stream')) {
     return new Response('Invalid content type. Use application/octet-stream.', { status: 400 });
@@ -59,6 +79,41 @@ async function handleUpload(request, url, env) {
     segments: result.segments || [],
     chunkCount: 1,
     errors: [],
+  });
+}
+
+/** POST /seg - 上传图片并识别内容 */
+async function handleImageToText(request, url, env) {
+  const contentType = request.headers.get('content-type') || '';
+  if (!contentType.startsWith('image/') && !contentType.includes('application/octet-stream')) {
+    return new Response('Invalid content type. Use image/png, image/jpeg, etc.', { status: 400 });
+  }
+
+  const params = {
+    prompt: url.searchParams.get('prompt') || null,
+    max_tokens: parseInt(url.searchParams.get('max_tokens')) || 512,
+  };
+
+  let image;
+  try {
+    image = await request.arrayBuffer();
+  } catch {
+    return new Response('Failed to read image body.', { status: 400 });
+  }
+
+  let result;
+  try {
+    result = await describeImage(image, env, params);
+  } catch (e) {
+    const msg = String(e?.message || e || '');
+    if (msg.includes('quota') || msg.includes('exceeded') || msg.includes('limit')) {
+      return new Response('Daily free quota exceeded. Please try again after 00:00 UTC.', { status: 429 });
+    }
+    return new Response('Image recognition failed: ' + msg, { status: 500 });
+  }
+
+  return Response.json({
+    description: result.description || '',
   });
 }
 
