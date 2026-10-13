@@ -2,11 +2,12 @@
   "name": "whisper-cloudflare",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@12.11.2",
   "scripts": {
-    "prepare": "npm run copy-ffmpeg",
+    "prepare": "pnpm run copy-ffmpeg",
     "copy-ffmpeg": "node scripts/copy-ffmpeg.js",
-    "deploy": "npm run copy-ffmpeg && wrangler deploy",
-    "dev": "npm run copy-ffmpeg && wrangler dev"
+    "deploy": "pnpm run copy-ffmpeg && wrangler deploy",
+    "dev": "pnpm run copy-ffmpeg && wrangler dev"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

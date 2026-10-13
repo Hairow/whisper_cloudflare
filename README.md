@@ -49,8 +49,8 @@ Cloudflare Workers AI 每日提供 10,000 neurons 免费额度。Whisper large-v
 ## 部署
 
 ```bash
-npm install
-npx wrangler deploy
+pnpm install
+pnpm exec wrangler deploy
 ```
 
 ## 技术栈
@@ -123,7 +123,7 @@ ffmpeg.wasm 由主线程 + Web Worker 双线程运行，涉及 4 个文件：
 | `ffmpeg-core.js` | `importScripts()` | CDN（unpkg） | ❌ importScripts 不检查 CORS，不检查 COEP|
 | `ffmpeg-core.wasm` | `fetch()` | CDN（unpkg） | ✅ CDN 需返回 CORS 头，但项目未启用 COEP，不强制 CORP |
 
-- `ffmpeg.js` / `814.ffmpeg.js` 由 `npm run postinstall` 从 `node_modules` 拷贝到 `public/ffmpeg-umd/`
+- `ffmpeg.js` / `814.ffmpeg.js` 由 `pnpm run postinstall` 从 `node_modules` 拷贝到 `public/ffmpeg-umd/`
 - `ffmpeg-core.js` / `ffmpeg-core.wasm` 直接从 unpkg CDN 加载
 - 使用单线程版 core（`dist/umd`），WASM 堆上限 128MB
 
